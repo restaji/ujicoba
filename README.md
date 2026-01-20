@@ -38,7 +38,8 @@ Slippage is the difference between the **mid-market price** and the **average ex
   - Fetches pre-calculated bid/ask quotes for size buckets ($1K, $100K, $1M).
   - Interpolates spread for sizes within range.
   - Extrapolates linearly for order sizes > $1M.
-  - Uses `mark_price` as the reference mid-price.
+  - Uses `mark_price` as the reference for spread normalization.
+  - Mid-price calculated as `(best_bid + best_ask) / 2` derived from the smallest quote bucket.
 
 ### 2. Fee Structure (Taker Fees)
 Fees are applied for both opening and closing positions.
@@ -77,7 +78,7 @@ python rwa_fee_comparisson.py
 
 ## Usage
 
-1. Open `http://127.0.0.1:5001` in your browser
+1. Open `---` in your browser
 2. Select an asset from the dropdown
 3. Choose order size ($10K, $100K, $1M, $10M)
 4. Results auto-refresh on selection

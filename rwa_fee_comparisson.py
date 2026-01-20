@@ -835,17 +835,16 @@ class VariationalAPI:
         # Slippage is half the spread (entry only)
         slippage_bps = spread_bps / 2
         
-        # Get best bid/ask from closest bucket for display
-        if order_size_usd <= 1000:
-            quote = quotes.get('size_1k')
-        elif order_size_usd <= 100000:
-            quote = quotes.get('size_100k')
-        else:
-            quote = quotes.get('size_1m') or quotes.get('size_100k')
+        # Get best bid/ask from smallest bucket (Top of Book) for mid_price calculation
+        quote_1k = quotes.get('size_1k') or quotes.get('size_100k') or quotes.get('size_1m')
         
-        bid = float(quote.get('bid', 0)) if quote else mark_price
-        ask = float(quote.get('ask', 0)) if quote else mark_price
-        mid_price = mark_price
+        bid = float(quote_1k.get('bid', 0)) if quote_1k else mark_price
+        ask = float(quote_1k.get('ask', 0)) if quote_1k else mark_price
+        
+        if bid > 0 and ask > 0:
+            mid_price = (bid + ask) / 2
+        else:
+            mid_price = mark_price
         
         return {
             'executed': True,
