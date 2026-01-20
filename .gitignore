@@ -28,3 +28,11 @@ Thumbs.db
 # Local config
 .env
 .env.local
+
+# Specific files from remote
+hyperliquidtest.py 
+latest r.py 
+orderbook lighter.py 
+orderbook.py 
+test.py
+test
