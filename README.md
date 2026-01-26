@@ -8,12 +8,10 @@ This tool compares slippage and trading fees across 8 decentralized perpetual ex
 
 - **Hyperliquid** - Orderbook-based DEX
 - **Lighter** - Orderbook-based DEX  
-- **Paradex** - Orderbook-based DEX
 - **Aster** - Orderbook-based DEX
 - **Avantis** - Oracle-based DEX
 - **Ostium** - Oracle-based DEX
 - **Extended** - Orderbook-based DEX (Starknet)
-- **Variational** - Peer-to-Peer DEX (RFQ)
 
 ## Methodology
 
@@ -34,31 +32,24 @@ Slippage measures price impact and is calculated as:
 Slippage (bps) = ((Avg Execution Price - Mid Price) / Mid Price) × 10000
 ```
 
-- **Orderbook DEXs (Hyperliquid, Lighter, Paradex, Aster, Extended)**:
-  - Fetches the full L2 orderbook snapshot.
+- **Orderbook DEXs (Hyperliquid, Lighter, Aster, Extended)**:
+  - Fetches the full orderbook snapshot.
   - Simulates walking down the orderbook to fill the requested size.
   - Calculates average execution price from filled levels.
 
-- **Oracle DEXs (Avantis, Ostium)**:
+- **Non-Orderbook DEXs (Avantis, Ostium)**:
   - Uses fixed spread/fee parameters from documentation.
-  - Assumes zero price impact for supported sizes (infinite liquidity assumption up to caps).
-
-- **Variational (RFQ)**:
-  - Fetches pre-calculated bid/ask quotes for size buckets ($1K, $100K, $1M).
-  - Interpolates spread for sizes within range.
-  - Extrapolates linearly for order sizes > $1M.
+  - Assumes zero price impact for supported sizes.
 
 ### 2. Fee Structure (Taker Fees)
 Fees are applied for both opening and closing positions.
 
 - **Hyperliquid**: 4.5 bps
 - **Lighter**: 0.0 bps (currently)
-- **Paradex**: 0.0 bps (maker/taker model dependent)
 - **Aster**: 4.0 bps
 - **Avantis**: Variable (based on OI skew/utilization)
 - **Ostium**: 3-20 bps (varies by asset class)
 - **Extended**: Orderbook dependent
-- **Variational**: 0.0 bps (fees baked into spread)
 
 ### 3. Total Cost
 The final result is expressed in bps: `Effective Spread + Fees`.

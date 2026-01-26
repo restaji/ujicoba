@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
+from __future__ import annotations  # Enable forward references for type hints
 """
 Multi-Exchange Slippage Comparison API
 
 Compares execution costs across 6 perp DEXs:
 - Hyperliquid
 - Lighter  
-- Paradex
 - Aster
 - Avantis
 - Ostium (oracle-based)
+- Extended
 
 Run with: python slippage_api.py
 Visit: http://localhost:5000
@@ -18,45 +19,51 @@ from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
 import requests
 import json
+import time
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 
 app = Flask(__name__)
 CORS(app)
 
-# --- CONSTANTS ---
-HYPERLIQUID_TAKER_FEE_BPS = 4.5
+# Taker Fees
+HYPERLIQUID_TAKER_FEE_BPS = 0.9
 LIGHTER_TAKER_FEE_BPS = 0.0
-PARADEX_TAKER_FEE_BPS = 0.0
 ASTER_TAKER_FEE_BPS = 4.0
-VARIATIONAL_TAKER_FEE_BPS = 0.0  
+EXTENDED_TAKER_FEE_BPS = 2.5
+
+# Maker Fees 
+HYPERLIQUID_MAKER_FEE_BPS = 0.3
+LIGHTER_MAKER_FEE_BPS = 0.0
+ASTER_MAKER_FEE_BPS = 0.5
+EXTENDED_MAKER_FEE_BPS = 0.0
 
 # Ostium fees vary by asset class (from docs)
 OSTIUM_FEES_BPS = {
     # Commodities
-    'XAUUSD': 3.0,   # Gold
-    'XAGUSD': 15.0,  # Silver
-    'XPTUSD': 20.0,  # Platinum
-    'XPDUSD': 20.0,  # Palladium
-    'CLUSD': 10.0,   # Oil
-    'HGUSD': 15.0,   # Copper
+    'XAUUSD': 1.5,   # Gold (XAU) --Discounted by 50%
+    'XAGUSD': 7.5,  # Silver (XAG) --Discounted by 50%
+        # 'XPTUSD': 20.0,  # Platinum   
+        # 'XPDUSD': 20.0,  # Palladium  
+        # 'CLUSD': 10.0,   # Oil
+        # 'HGUSD': 15.0,   # Copper
     # Forex
     'EURUSD': 3.0,
     'GBPUSD': 3.0,
-    'USDJPY': 3.0,
-    'USDCAD': 3.0,
-    'USDCHF': 3.0,
-    'AUDUSD': 3.0,
-    'NZDUSD': 3.0,
-    'USDMXN': 5.0,  # Exception
+    'USDJPY': 1.5,
+    # 'USDCAD': 3.0,
+    # 'USDCHF': 3.0,
+    # 'AUDUSD': 3.0,
+    # 'NZDUSD': 3.0,
+    # 'USDMXN': 5.0,  
     # Indices
     'SPXUSD': 5.0,
-    'NDXUSD': 5.0,
-    'DJIUSD': 5.0,
-    'DAXEUR': 5.0,
-    'NIKJPY': 5.0,
-    'HSIHKD': 5.0,
-    'FTSEGBP': 5.0,
+        # 'NDXUSD': 5.0,    
+        # 'DJIUSD': 5.0,    
+        # 'DAXEUR': 5.0,
+        # 'NIKJPY': 5.0,
+        # 'HSIHKD': 5.0,
+        # 'FTSEGBP': 5.0,
     # Stocks
     'NVDAUSD': 5.0,
     'GOGUSD': 5.0,
@@ -67,13 +74,13 @@ OSTIUM_FEES_BPS = {
     'TSLAUSD': 5.0,
     'COINUSD': 5.0,
     'HOODUSD': 5.0,
-    'PLTRUSD': 5.0,
-    'AMDUSD': 5.0,
-    'NFLXUSD': 5.0,
-    'ORCLUSD': 5.0,
-    'COSTUSD': 5.0,
-    'XOMUSD': 5.0,
-    'CVXUSD': 5.0,
+        # 'PLTRUSD': 5.0,
+        # 'AMDUSD': 5.0,
+        # 'NFLXUSD': 5.0,
+        # 'ORCLUSD': 5.0,
+        # 'COSTUSD': 5.0,
+        # 'XOMUSD': 5.0,
+        # 'CVXUSD': 5.0,
 }
 
 
@@ -86,36 +93,32 @@ class AssetConfig:
     asset_class: str  # 'commodity', 'forex', 'index', 'stock'
     hyperliquid_symbol: Optional[str]
     lighter_market_id: Optional[int]
-    paradex_symbol: Optional[str]
     aster_symbol: Optional[str]
     ostium_symbol: Optional[str]
     extended_symbol: Optional[str] = None  # Extended Exchange symbol
-    variational_symbol: Optional[str] = None  # Variational symbol
 
 ASSETS = {
     # Commodities
-    'GOLD': AssetConfig('Gold', 'XAU', 'commodity', 'PAXG', 92, 'PAXG', 'XAUUSDT', 'XAUUSD', 'XAU-USD', 'PAXG'),
-    'SILVER': AssetConfig('Silver', 'XAG', 'commodity', 'SILVER', 93, None, 'XAGUSDT', 'XAGUSD', 'XAG-USD'),
+    'XAU': AssetConfig('XAU/USD', 'XAU', 'commodity', None, 92, 'XAUUSDT', 'XAUUSD', 'XAU-USD'),
+    'XAG': AssetConfig('XAG/USD', 'XAG', 'commodity', 'SILVER', 93, 'XAGUSDT', 'XAGUSD', 'XAG-USD'),
     
     # Forex
-    'EURUSD': AssetConfig('EUR/USD', 'EURUSD', 'forex', 'EUR', 96, None, None, 'EURUSD', 'EUR-USD'),
-    'GBPUSD': AssetConfig('GBP/USD', 'GBPUSD', 'forex', 'GBP', 97, None, None, 'GBPUSD', None),  # Not on Extended
-    'USDJPY': AssetConfig('USD/JPY', 'USDJPY', 'forex', 'JPY', 98, None, None, 'USDJPY', 'USDJPY-USD'),
+    'EURUSD': AssetConfig('EUR/USD', 'EURUSD', 'forex', 'EUR', 96, None, 'EURUSD', 'EUR-USD'),
+    'GBPUSD': AssetConfig('GBP/USD', 'GBPUSD', 'forex', 'GBP', 97, None, 'GBPUSD', None),  
+    'USDJPY': AssetConfig('USD/JPY', 'USDJPY', 'forex', 'JPY', 98, None, 'USDJPY', 'USDJPY-USD'),
     
-    # MAG7 Stocks (Not on Extended Exchange)
-    'AAPL': AssetConfig('Apple', 'AAPL', 'stock', 'AAPL', 113, None, 'AAPLUSDT', 'AAPLUSD', None),
-    'MSFT': AssetConfig('Microsoft', 'MSFT', 'stock', 'MSFT', 115, None, 'MSFTUSDT', 'MSFTUSD', None),
-    'GOOG': AssetConfig('Google', 'GOOG', 'stock', 'GOOGL', 116, None, 'GOOGUSDT', 'GOGUSD', None),
-    'AMZN': AssetConfig('Amazon', 'AMZN', 'stock', 'AMZN', 114, None, 'AMZNUSDT', 'AMZNUSD', None),
-    'META': AssetConfig('Meta', 'META', 'stock', 'META', 117, None, 'METAUSDT', 'METAUSD', None),
-    'NVDA': AssetConfig('NVIDIA', 'NVDA', 'stock', 'NVDA', 110, None, 'NVDAUSDT', 'NVDAUSD', None),
-    'TSLA': AssetConfig('Tesla', 'TSLA', 'stock', 'TSLA', 112, None, 'TSLAUSDT', 'TSLAUSD', None),
+    # MAG7 Stocks 
+    'AAPL': AssetConfig('AAPL/USD', 'AAPL', 'stock', 'AAPL', 113, 'AAPLUSDT', 'AAPLUSD', None),
+    'MSFT': AssetConfig('MSFT/USD', 'MSFT', 'stock', 'MSFT', 115, 'MSFTUSDT', 'MSFTUSD', None),
+    'GOOG': AssetConfig('GOOG/USD', 'GOOG', 'stock', 'GOOGL', 116, 'GOOGUSDT', 'GOGUSD', None),
+    'AMZN': AssetConfig('AMZN/USD', 'AMZN', 'stock', 'AMZN', 114, 'AMZNUSDT', 'AMZNUSD', None),
+    'META': AssetConfig('META/USD', 'META', 'stock', 'META', 117, 'METAUSDT', 'METAUSD', None),
+    'NVDA': AssetConfig('NVDA/USD', 'NVDA', 'stock', 'NVDA', 110, 'NVDAUSDT', 'NVDAUSD', None),
+    'TSLA': AssetConfig('TSLA/USD', 'TSLA', 'stock', 'TSLA', 112, 'TSLAUSDT', 'TSLAUSD', None),
     
     # Other
-    'COIN': AssetConfig('Coinbase', 'COIN', 'stock', 'COIN', 109, None, 'COINUSDT', 'COINUSD', None),
+    'COIN': AssetConfig('COIN/USD', 'COIN', 'stock', 'COIN', 109, 'COINUSDT', 'COINUSD', None),
 }
-
-
 
 
 class OstiumAPI:
@@ -132,81 +135,100 @@ class OstiumAPI:
     
     def get_fee_bps(self, ostium_symbol: str) -> float:
         """Get the opening fee for an Ostium asset based on their fee schedule."""
-        return OSTIUM_FEES_BPS.get(ostium_symbol, 5.0)  # Default to 5 bps
+        return OSTIUM_FEES_BPS.get(ostium_symbol, 5.0)  
     
-    def get_latest_price(self, asset: str, max_retries: int = 3) -> Optional[Dict]:
+    def get_latest_price(self, asset: str, max_retries: int = 5) -> Optional[Dict]:
         """Get the latest price for a specific asset with retry logic."""
         url = f"{self.BASE_URL}/PricePublish/latest-price"
         params = {"asset": asset}
         
         for attempt in range(max_retries):
             try:
-                response = self.session.get(url, params=params, timeout=30)
+                response = self.session.get(url, params=params, timeout=1000)
                 if response.status_code == 200:
-                    data = response.json()
-                    if data and data.get('mid', 0) > 0:
-                        return data
+                    try:
+                        data = response.json()
+                        if data and data.get('mid', 0) > 0:
+                            return data
+                    except ValueError:
+                        pass
             except Exception as e:
                 if attempt < max_retries - 1:
                     import time
-                    time.sleep(1)  # Wait 1 second before retry
+                    time.sleep(1)  
                 else:
                     print(f"  > Ostium error for {asset} after {max_retries} attempts: {e}")
         return None
     
-    def calculate_execution_cost(self, asset: str, order_size_usd: float) -> Optional[Dict]:
+    def get_orderbook(self, symbol: str) -> Optional[Dict]:
         """
-        Calculate execution cost based on oracle spread + opening fee.
-        
-        Ostium uses oracle-provided bid/ask, so spread is static
-        regardless of order size (no orderbook depth).
-        Opening fee varies by asset class.
+        Fetch price and create a "synthetic" orderbook.
+        Ostium is oracle based not and orderbook.
         """
-        price_data = self.get_latest_price(asset)
+        price_data = self.get_latest_price(symbol)
         if not price_data:
             return None
-        
-        bid = price_data.get('bid', 0)
-        ask = price_data.get('ask', 0)
-        mid = price_data.get('mid', 0)
-        
-        if bid <= 0 or ask <= 0 or mid <= 0:
+        return price_data
+
+    def normalize_orderbook(self, orderbook: Dict, depth_usd: float) -> Optional[StandardizedOrderbook]:
+        """
+        Normalize Ostium 'orderbook' (price data) to standard format.
+        Uses depth_usd to simulate available liquidity at the oracle price.
+        """
+        if not orderbook:
             return None
         
-        spread = ask - bid
-        spread_bps = (spread / mid) * 10000
-        slippage_bps = spread_bps / 2  # Half spread on entry
+        # Ostium returns bid, ask, mid on its API endpoint
+        bid = float(orderbook.get('bid', 0))
+        ask = float(orderbook.get('ask', 0))
+        mid = float(orderbook.get('mid', 0))
         
-        # Get asset-specific fee
-        fee_bps = self.get_fee_bps(asset)
-        
-        return {
-            'executed': True,
-            'best_bid': bid,
-            'best_ask': ask,
-            'mid_price': mid,
-            'slippage_bps': slippage_bps,
-            'fee_bps': fee_bps,
-            'is_market_open': price_data.get('isMarketOpen', False),
-            'filled': True,
-            'buy': {
-                'filled': True,
-                'filled_usd': order_size_usd,
-                'unfilled_usd': 0,
-                'levels_used': 1,
-                'avg_price': ask,
-                'slippage_bps': slippage_bps
-            },
-            'sell': {
-                'filled': True,
-                'filled_usd': order_size_usd,
-                'unfilled_usd': 0,
-                'levels_used': 1,
-                'avg_price': bid,
-                'slippage_bps': slippage_bps
-            }
-        }
+        if bid <= 0 or ask <= 0:
+            return None
+            
+        # Use requested depth for liquidity
+        std_bids = [{'price': bid, 'qty': depth_usd / bid}]
+        std_asks = [{'price': ask, 'qty': depth_usd / ask}]
 
+        return StandardizedOrderbook(
+            bids=std_bids,
+            asks=std_asks,
+            best_bid=bid,
+            best_ask=ask,
+            mid_price=mid,
+            timestamp=time.time()
+        )
+
+    def calculate_execution_cost(self, asset: str, order_size_usd: float) -> Optional[Dict]:
+        """Calculate execution cost using shared ExecutionCalculator."""
+        # 1. Get synthetic orderbook
+        raw_data = self.get_orderbook(asset)
+        # Use order_size_usd + small buffer as depth to ensure full fill
+        std_orderbook = self.normalize_orderbook(raw_data, depth_usd=order_size_usd * 1.01)
+        
+        if not std_orderbook:
+            return None
+        
+        # 2. Get fees
+        open_fee_bps = self.get_fee_bps(asset)
+        close_fee_bps = 0.0
+        
+        # 3. Calculate using shared logic
+        result = ExecutionCalculator.calculate_execution_cost(
+            std_orderbook,
+            order_size_usd,
+            open_fee_bps=open_fee_bps,
+            close_fee_bps=close_fee_bps
+        )
+        
+        if result:
+            # Add Ostium-specific metadata
+            result['fee_bps'] = open_fee_bps
+            result['maker_fee_bps'] = 0.0  # N/A
+            if raw_data:
+                result['is_market_open'] = raw_data.get('isMarketOpen', False)
+        
+        return result
 
 
 class HyperliquidAPI:
@@ -225,7 +247,7 @@ class HyperliquidAPI:
             payload["nSigFigs"] = n_sig_figs
 
         try:
-            response = requests.post(self.base_url, json=payload, headers=self.headers, timeout=10)
+            response = requests.post(self.base_url, json=payload, headers=self.headers, timeout=1000)
             if response.status_code != 200: 
                 return None
             data = response.json()
@@ -256,95 +278,151 @@ class HyperliquidAPI:
         except Exception:
             return None
 
-    def get_orderbook(self, symbol: str, n_sig_figs: Optional[int] = None) -> Tuple[Optional[Dict], bool]:
+    def get_orderbook(self, symbol: str, n_sig_figs: Optional[int] = None) -> Optional[Dict]:
         raw_symbol = self.normalize_symbol(symbol)
         
-        # Try XYZ (RWA) version first
-        rwa_coin = f"xyz:{raw_symbol}"
-        book = self._fetch_coin(rwa_coin, n_sig_figs)
-        if book:
-            return book, True
-        
-        # Fall back to regular symbol
-        book = self._fetch_coin(raw_symbol, n_sig_figs)
-        if book:
-            return book, False
-        
-        return None, False
+        # Directly use XYZ (RWA) version
+        coin = raw_symbol if raw_symbol.startswith("xyz:") else f"xyz:{raw_symbol}"
+        return self._fetch_coin(coin, n_sig_figs)
 
-    def calculate_execution_cost(self, orderbook: Dict, order_size_usd: float, anchor_mid_price: Optional[float] = None) -> Optional[Dict]:
-        if not orderbook: return None
+    def normalize_orderbook(self, orderbook: Dict) -> Optional[StandardizedOrderbook]:
+        """Normalize Hyperliquid orderbook to standard format."""
+        if not orderbook:
+            return None
+        
         levels = orderbook.get('levels', [[], []])
         bids = levels[0] if len(levels) > 0 else []
         asks = levels[1] if len(levels) > 1 else []
-        if not asks or not bids: return None
-
+        
+        if not asks or not bids:
+            return None
+        
         try:
             best_bid = float(bids[0].get('px', 0))
             best_ask = float(asks[0].get('px', 0))
         except (ValueError, AttributeError, IndexError):
             return None
         
-        if best_bid <= 0 or best_ask <= 0: return None
+        if best_bid <= 0 or best_ask <= 0:
+            return None
         
-        mid_price = anchor_mid_price if anchor_mid_price else (best_bid + best_ask) / 2
-
-        buy_result = self._calculate_side(asks, order_size_usd, mid_price, 'buy')
-        sell_result = self._calculate_side(bids, order_size_usd, mid_price, 'sell')
-
-        if buy_result and sell_result:
-            avg_slippage = (buy_result['slippage_bps'] + sell_result['slippage_bps']) / 2
-            filled = buy_result['filled'] and sell_result['filled']
-            max_levels_hit = (buy_result['levels_used'] >= len(asks)) or (sell_result['levels_used'] >= len(bids))
-            
-            return {
-                'executed': True if filled else 'PARTIAL',
-                'best_bid': best_bid,
-                'best_ask': best_ask,
-                'mid_price': mid_price,
-                'slippage_bps': avg_slippage,
-                'fee_bps': HYPERLIQUID_TAKER_FEE_BPS,
-                'buy': buy_result,
-                'sell': sell_result,
-                'filled': filled,
-                'max_levels_hit': max_levels_hit
-            }
-        return None
-
-    def _calculate_side(self, levels, order_size_usd, mid_price, side):
-        levels = sorted(levels, key=lambda x: float(x.get('px', 0)), reverse=(side == 'sell'))
-        total_qty = 0
-        total_cost = 0
-        remaining_usd = order_size_usd
-        levels_used = 0
-        
-        for level in levels:
+        # Convert to standard format: [{'price': float, 'qty': float}, ...]
+        std_bids = []
+        for b in bids:
             try:
-                price = float(level.get('px', 0))
-                size = float(level.get('sz', 0))
-            except (ValueError, AttributeError): continue
-            
-            if price <= 0 or size <= 0: continue
-            value_available = price * size
-            
-            if remaining_usd <= value_available:
-                qty_needed = remaining_usd / price
-                total_qty += qty_needed
-                total_cost += remaining_usd
-                remaining_usd = 0
-                levels_used += 1
-                break
-            else:
-                total_qty += size
-                total_cost += value_available
-                remaining_usd -= value_available
-                levels_used += 1
+                std_bids.append({'price': float(b.get('px', 0)), 'qty': float(b.get('sz', 0))})
+            except (ValueError, AttributeError):
+                continue
+        
+        std_asks = []
+        for a in asks:
+            try:
+                std_asks.append({'price': float(a.get('px', 0)), 'qty': float(a.get('sz', 0))})
+            except (ValueError, AttributeError):
+                continue
+        
+        mid_price = (best_bid + best_ask) / 2
+        
+        return StandardizedOrderbook(
+            bids=std_bids,
+            asks=std_asks,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            mid_price=mid_price,
+            timestamp=time.time()
+        )
 
-        filled_usd = order_size_usd - remaining_usd
-        avg_price = total_cost / total_qty if total_qty > 0 else 0
-        slippage_bps = abs((avg_price - mid_price) / mid_price) * 10000 if (mid_price > 0 and avg_price > 0) else 0
+    def calculate_execution_cost(self, orderbook: Dict, order_size_usd: float, anchor_mid_price: Optional[float] = None) -> Optional[Dict]:
+        """Calculate execution cost using shared ExecutionCalculator."""
+        std_orderbook = self.normalize_orderbook(orderbook)
+        if not std_orderbook:
+            return None
+        
+        # Override mid_price if anchor provided (for consistent comparison across sig figs)
+        if anchor_mid_price:
+            std_orderbook = StandardizedOrderbook(
+                bids=std_orderbook.bids,
+                asks=std_orderbook.asks,
+                best_bid=std_orderbook.best_bid,
+                best_ask=std_orderbook.best_ask,
+                mid_price=anchor_mid_price,
+                timestamp=std_orderbook.timestamp
+            )
+        
+        result = ExecutionCalculator.calculate_execution_cost(
+            std_orderbook,
+            order_size_usd,
+            open_fee_bps=HYPERLIQUID_TAKER_FEE_BPS,
+            close_fee_bps=0.0
+        )
+        
+        if result:
+            # Add Hyperliquid-specific fields
+            result['fee_bps'] = HYPERLIQUID_TAKER_FEE_BPS
+            result['maker_fee_bps'] = HYPERLIQUID_MAKER_FEE_BPS
+            max_levels_hit = (result['buy']['levels_used'] >= len(std_orderbook.asks)) or \
+                           (result['sell']['levels_used'] >= len(std_orderbook.bids))
+            result['max_levels_hit'] = max_levels_hit
+        
+        return result
+
+    def get_optimal_execution(self, symbol: str, order_size_usd: float) -> Optional[Dict]:
+        """
+        Calculates execution cost by cascading through orderbook precisions.
+        Flow:
+        1. Try Max Precision (None). If it fills the order, stop and return.
+        2. If not, try 4 Significant Figures (deeper). If filled, stop and return.
+        """
+        
+        # Precisions to try in order of preference: Max -> 4 due to slippage meassure accuracy
+        # Max precision gives best price accuracy. Lower sig figs give more depth.
+        precisions_to_try = [None, 4] 
+        
+        final_result = None
+        
+        for n_sig in precisions_to_try:
+            # 1. Fetch
+            raw_book = self.get_orderbook(symbol, n_sig_figs=n_sig)
+            if not raw_book: continue
             
-        return {'filled': remaining_usd == 0, 'filled_usd': filled_usd, 'unfilled_usd': remaining_usd, 'levels_used': levels_used, 'avg_price': avg_price, 'slippage_bps': slippage_bps}
+            # 2. Normalize
+            std_book = self.normalize_orderbook(raw_book)
+            if not std_book: continue
+            
+            # 3. Calculate
+            result = ExecutionCalculator.calculate_execution_cost(
+                std_book,
+                order_size_usd,
+                open_fee_bps=HYPERLIQUID_TAKER_FEE_BPS
+            )
+            
+            if result:
+                # Store this as the current best result
+                # If we don't find a full fill later, this (or the next iteration's result) will be returned
+                final_result = result
+                final_result['fee_bps'] = HYPERLIQUID_TAKER_FEE_BPS
+                final_result['maker_fee_bps'] = HYPERLIQUID_MAKER_FEE_BPS
+                
+                # Label the precision used
+                if n_sig is None:
+                    final_result['sig_figs'] = "Maximum"
+                else:
+                    final_result['sig_figs'] = n_sig
+                
+                # If it's a full fill, we are done. Stop looking.
+                if result['filled']:
+                    break
+        
+        # If loop finishes and we only have a partial fill (from 4 sig figs), final_result corresponds to that.
+        
+        if final_result:
+            # Metadata
+            final_result['is_xyz'] = True
+            # Ensure symbol has xyz: prefix for display
+            display_symbol = symbol if "xyz" in str(symbol) else f"xyz:{symbol}"
+            final_result['symbol'] = display_symbol
+            
+        return final_result
 
 
 class LighterAPI:
@@ -360,140 +438,53 @@ class LighterAPI:
             return response.json()
         except Exception: return None
 
-    def calculate_execution_cost(self, orderbook: Dict, order_size_usd: float) -> Optional[Dict]:
-        if not orderbook: return None
+    def normalize_orderbook(self, orderbook: Dict) -> Optional[StandardizedOrderbook]:
+        """Normalize Lighter orderbook to standard format."""
+        if not orderbook:
+            return None
         bids = orderbook.get('bids', [])
         asks = orderbook.get('asks', [])
-        if not asks or not bids: return None
+        if not asks or not bids:
+            return None
 
         best_bid = float(bids[0].get('price', 0))
         best_ask = float(asks[0].get('price', 0))
+        if best_bid <= 0 or best_ask <= 0:
+            return None
+        
         mid_price = (best_bid + best_ask) / 2
 
-        buy_result = self._calculate_side(asks, order_size_usd, mid_price, 'buy')
-        sell_result = self._calculate_side(bids, order_size_usd, mid_price, 'sell')
+        # Convert to standard format
+        std_bids = [{'price': float(b.get('price', 0)), 'qty': float(b.get('remaining_base_amount', 0))} for b in bids]
+        std_asks = [{'price': float(a.get('price', 0)), 'qty': float(a.get('remaining_base_amount', 0))} for a in asks]
 
-        if buy_result and sell_result:
-            avg_slippage = (buy_result['slippage_bps'] + sell_result['slippage_bps']) / 2
-            filled = buy_result['filled'] and sell_result['filled']
-            return {
-                'executed': True if filled else 'PARTIAL',
-                'mid_price': mid_price,
-                'slippage_bps': avg_slippage,
-                'fee_bps': LIGHTER_TAKER_FEE_BPS,
-                'buy': buy_result,
-                'sell': sell_result,
-                'filled': filled
-            }
-        return None
-
-    def _calculate_side(self, levels, order_size_usd, mid_price, side):
-        levels = sorted(levels, key=lambda x: float(x.get('price', 0)), reverse=(side == 'sell'))
-        total_qty = 0
-        total_cost = 0
-        remaining_usd = order_size_usd
-        levels_used = 0
-        
-        for level in levels:
-            price = float(level.get('price', 0))
-            size = float(level.get('remaining_base_amount', 0))
-            if price <= 0: continue
-            value_available = price * size
-            if remaining_usd <= value_available:
-                qty_needed = remaining_usd / price
-                total_qty += qty_needed
-                total_cost += remaining_usd
-                remaining_usd = 0
-                levels_used += 1
-                break
-            else:
-                total_qty += size
-                total_cost += value_available
-                remaining_usd -= value_available
-                levels_used += 1
-                
-        filled_usd = order_size_usd - remaining_usd
-        avg_price = total_cost / total_qty if total_qty > 0 else 0
-        slippage_bps = abs((avg_price - mid_price) / mid_price) * 10000 if mid_price > 0 else 0
-        return {'filled': remaining_usd == 0, 'filled_usd': filled_usd, 'unfilled_usd': remaining_usd, 'levels_used': levels_used, 'avg_price': avg_price, 'slippage_bps': slippage_bps}
-
-
-class ParadexAPI:
-    def __init__(self):
-        self.base_url = "https://api.prod.paradex.trade/v1"
-        self.headers = {'Accept': 'application/json'}
-
-    def get_orderbook(self, symbol: str) -> Optional[Dict]:
-        pair = f"{symbol.upper()}-USD-PERP"
-        url = f"{self.base_url}/orderbook/{pair}"
-        params = {'depth': 100}
-        try:
-            response = requests.get(url, headers=self.headers, params=params, timeout=1000)
-            if response.status_code == 404:
-                return None
-            response.raise_for_status()
-            data = response.json()
-            result_data = data.get('result', data)
-            if not result_data.get('bids') or not result_data.get('asks'): return None
-            bids = [{'price': float(b[0]), 'qty': float(b[1])} for b in result_data['bids']]
-            asks = [{'price': float(a[0]), 'qty': float(a[1])} for a in result_data['asks']]
-            return {'bids': bids, 'asks': asks}
-        except: return None
+        return StandardizedOrderbook(
+            bids=std_bids,
+            asks=std_asks,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            mid_price=mid_price,
+            timestamp=time.time()
+        )
 
     def calculate_execution_cost(self, orderbook: Dict, order_size_usd: float) -> Optional[Dict]:
-        if not orderbook: return None
-        bids = orderbook.get('bids', [])
-        asks = orderbook.get('asks', [])
-        if not asks or not bids: return None
-        best_bid = bids[0]['price']
-        best_ask = asks[0]['price']
-        mid_price = (best_bid + best_ask) / 2
-        buy_result = self._calculate_side(asks, order_size_usd, mid_price, 'buy')
-        sell_result = self._calculate_side(bids, order_size_usd, mid_price, 'sell')
-        if buy_result and sell_result:
-            avg_slippage = (buy_result['slippage_bps'] + sell_result['slippage_bps']) / 2
-            filled = buy_result['filled'] and sell_result['filled']
-            return {
-                'executed': True if filled else 'PARTIAL',
-                'mid_price': mid_price,
-                'slippage_bps': avg_slippage,
-                'fee_bps': PARADEX_TAKER_FEE_BPS,
-                'buy': buy_result,
-                'sell': sell_result,
-                'filled': filled
-            }
-        return None
-
-    def _calculate_side(self, levels, order_size_usd, mid_price, side):
-        levels = sorted(levels, key=lambda x: x['price'], reverse=(side == 'sell'))
-        total_qty = 0
-        total_cost = 0
-        remaining_usd = order_size_usd
-        levels_used = 0
+        """Calculate execution cost using shared ExecutionCalculator."""
+        std_orderbook = self.normalize_orderbook(orderbook)
+        if not std_orderbook:
+            return None
         
-        for level in levels:
-            price = level['price']
-            size = level['qty']
-            if price <= 0: continue
-            value_available = price * size
-            if remaining_usd <= value_available:
-                qty_needed = remaining_usd / price
-                total_qty += qty_needed
-                total_cost += remaining_usd
-                remaining_usd = 0
-                levels_used += 1
-                break
-            else:
-                total_qty += size
-                total_cost += value_available
-                remaining_usd -= value_available
-                levels_used += 1
-                
-        filled_usd = order_size_usd - remaining_usd
-        avg_price = total_cost / total_qty if total_qty > 0 else 0
-        slippage_bps = abs((avg_price - mid_price) / mid_price) * 10000 if mid_price > 0 else 0
-        return {'filled': remaining_usd == 0, 'filled_usd': filled_usd, 'unfilled_usd': remaining_usd, 'levels_used': levels_used, 'avg_price': avg_price, 'slippage_bps': slippage_bps}
-
+        result = ExecutionCalculator.calculate_execution_cost(
+            std_orderbook,
+            order_size_usd,
+            open_fee_bps=LIGHTER_TAKER_FEE_BPS,
+            close_fee_bps=0.0
+        )
+        
+        if result:
+            result['fee_bps'] = LIGHTER_TAKER_FEE_BPS
+            result['maker_fee_bps'] = LIGHTER_MAKER_FEE_BPS
+        
+        return result
 
 class AsterAPI:
     def __init__(self):
@@ -501,9 +492,9 @@ class AsterAPI:
         self.headers = {'Content-Type': 'application/json'}
 
     def get_orderbook(self, symbol: str) -> Optional[Dict]:
-        params = {'symbol': symbol, 'limit': 50}
+        params = {'symbol': symbol, 'limit': 100}
         try:
-            response = requests.get(self.base_url, headers=self.headers, params=params, timeout=10)
+            response = requests.get(self.base_url, headers=self.headers, params=params, timeout=1000)
             if response.status_code != 200:
                 return None
             data = response.json()
@@ -514,57 +505,49 @@ class AsterAPI:
         except Exception:
             return None
 
-    def calculate_execution_cost(self, orderbook: Dict, order_size_usd: float) -> Optional[Dict]:
-        if not orderbook: return None
+    def normalize_orderbook(self, orderbook: Dict) -> Optional[StandardizedOrderbook]:
+        """Normalize Aster orderbook to standard format."""
+        if not orderbook:
+            return None
         bids = orderbook.get('bids', [])
         asks = orderbook.get('asks', [])
-        if not asks or not bids: return None
+        if not asks or not bids:
+            return None
+        
         best_bid = bids[0]['price']
         best_ask = asks[0]['price']
+        if best_bid <= 0 or best_ask <= 0:
+            return None
+        
         mid_price = (best_bid + best_ask) / 2
-        buy_result = self._calculate_side(asks, order_size_usd, mid_price, 'buy')
-        sell_result = self._calculate_side(bids, order_size_usd, mid_price, 'sell')
-        if buy_result and sell_result:
-            avg_slippage = (buy_result['slippage_bps'] + sell_result['slippage_bps']) / 2
-            filled = buy_result['filled'] and sell_result['filled']
-            return {
-                'executed': True if filled else 'PARTIAL',
-                'mid_price': mid_price,
-                'slippage_bps': avg_slippage,
-                'fee_bps': ASTER_TAKER_FEE_BPS,
-                'buy': buy_result,
-                'sell': sell_result,
-                'filled': filled
-            }
-        return None
 
-    def _calculate_side(self, levels, order_size_usd, mid_price, side):
-        levels = sorted(levels, key=lambda x: x['price'], reverse=(side == 'sell'))
-        total_qty = 0
-        total_cost = 0
-        remaining_usd = order_size_usd
-        levels_used = 0
-        for level in levels:
-            price = level['price']
-            size = level['qty']
-            if price <= 0: continue
-            value_available = price * size
-            if remaining_usd <= value_available:
-                qty_needed = remaining_usd / price
-                total_qty += qty_needed
-                total_cost += remaining_usd
-                remaining_usd = 0
-                levels_used += 1
-                break
-            else:
-                total_qty += size
-                total_cost += value_available
-                remaining_usd -= value_available
-                levels_used += 1
-        filled_usd = order_size_usd - remaining_usd
-        avg_price = total_cost / total_qty if total_qty > 0 else 0
-        slippage_bps = abs((avg_price - mid_price) / mid_price) * 10000 if mid_price > 0 else 0
-        return {'filled': remaining_usd == 0, 'filled_usd': filled_usd, 'unfilled_usd': remaining_usd, 'levels_used': levels_used, 'avg_price': avg_price, 'slippage_bps': slippage_bps}
+        return StandardizedOrderbook(
+            bids=bids,  
+            asks=asks,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            mid_price=mid_price,
+            timestamp=time.time()
+        )
+
+    def calculate_execution_cost(self, orderbook: Dict, order_size_usd: float) -> Optional[Dict]:
+        """Calculate execution cost using shared ExecutionCalculator."""
+        std_orderbook = self.normalize_orderbook(orderbook)
+        if not std_orderbook:
+            return None
+        
+        result = ExecutionCalculator.calculate_execution_cost(
+            std_orderbook,
+            order_size_usd,
+            open_fee_bps=ASTER_TAKER_FEE_BPS,
+            close_fee_bps=0.0
+        )
+        
+        if result:
+            result['fee_bps'] = ASTER_TAKER_FEE_BPS
+            result['maker_fee_bps'] = ASTER_MAKER_FEE_BPS
+        
+        return result
 
 
 class AvantisStatic:
@@ -580,11 +563,11 @@ class AvantisStatic:
         indices = ['QQQ']
         equities_list = ['HOOD', 'NVDA', 'AAPL', 'AMZN', 'GOOG', 'MSFT', 'META', 'TSLA', 'COIN']
 
-        if key == 'GOLD':
+        if key == 'XAU':
             open_fee_bps = 6.0
             close_fee_bps = 0.0
             spread_bps = 0.0
-        elif key == 'SILVER':
+        elif key == 'XAG':
             open_fee_bps = 6.0
             close_fee_bps = 0.0
             spread_bps = 10.0
@@ -606,6 +589,7 @@ class AvantisStatic:
             spread_bps = 2.5
 
         slippage_bps = spread_bps / 2.0
+        total_cost_bps = slippage_bps + open_fee_bps + close_fee_bps
 
         return {
             'executed': True,
@@ -613,9 +597,12 @@ class AvantisStatic:
             'slippage_bps': slippage_bps,
             'open_fee_bps': open_fee_bps,
             'close_fee_bps': close_fee_bps,
+            'maker_fee_bps': 0.0,
+            'total_cost_bps': total_cost_bps,
             'filled': True,
-            'buy': {'filled_usd': order_size_usd, 'levels_used': 1},
-            'sell': {'filled_usd': order_size_usd, 'levels_used': 1}
+            'buy': {'filled': True, 'filled_usd': order_size_usd, 'unfilled_usd': 0, 'levels_used': 1, 'slippage_bps': slippage_bps},
+            'sell': {'filled': True, 'filled_usd': order_size_usd, 'unfilled_usd': 0, 'levels_used': 1, 'slippage_bps': slippage_bps},
+            'timestamp': time.time()
         }
 
 
@@ -635,7 +622,7 @@ class ExtendedAPI:
         """Fetch orderbook for a given market (e.g., 'XAU-USD')."""
         try:
             url = f"{self.BASE_URL}/info/markets/{market}/orderbook"
-            response = self.session.get(url, timeout=15)
+            response = self.session.get(url, timeout=1000)
             if response.status_code != 200:
                 return None
             data = response.json()
@@ -646,247 +633,386 @@ class ExtendedAPI:
             print(f"Extended API error for {market}: {e}")
             return None
     
-    def calculate_execution_cost(self, orderbook: Dict, order_size_usd: float) -> Optional[Dict]:
-        """Calculate execution cost from Extended orderbook."""
+    def normalize_orderbook(self, orderbook: Dict) -> Optional[StandardizedOrderbook]:
+        """Normalize Extended orderbook to standard format."""
         if not orderbook:
             return None
         
+        # Extended uses 'bid' and 'ask' keys (not 'bids'/'asks')
         bids = orderbook.get('bid', [])
         asks = orderbook.get('ask', [])
         
         if not bids or not asks:
             return None
         
-        # Get mid price
         best_bid = float(bids[0]['price'])
         best_ask = float(asks[0]['price'])
-        mid_price = (best_bid + best_ask) / 2
-        spread_bps = ((best_ask - best_bid) / mid_price) * 10000
         
-        # Calculate buy and sell execution
-        buy_result = self._calculate_side(asks, order_size_usd, mid_price)
-        sell_result = self._calculate_side(bids, order_size_usd, mid_price)
+        if best_bid <= 0 or best_ask <= 0:
+            return None
+        
+        mid_price = (best_bid + best_ask) / 2
+        
+        # Convert to standard format
+        std_bids = [{'price': float(b['price']), 'qty': float(b['qty'])} for b in bids]
+        std_asks = [{'price': float(a['price']), 'qty': float(a['qty'])} for a in asks]
+
+        return StandardizedOrderbook(
+            bids=std_bids,
+            asks=std_asks,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            mid_price=mid_price,
+            timestamp=time.time()
+        )
+
+    def calculate_execution_cost(self, orderbook: Dict, order_size_usd: float) -> Optional[Dict]:
+        """Calculate execution cost using shared ExecutionCalculator."""
+        std_orderbook = self.normalize_orderbook(orderbook)
+        if not std_orderbook:
+            return None
+        
+        open_fee_bps = EXTENDED_TAKER_FEE_BPS
+        close_fee_bps = EXTENDED_TAKER_FEE_BPS
+        
+        result = ExecutionCalculator.calculate_execution_cost(
+            std_orderbook,
+            order_size_usd,
+            open_fee_bps=open_fee_bps,
+            close_fee_bps=close_fee_bps
+        )
+        
+        if result:
+            result['maker_fee_bps'] = EXTENDED_MAKER_FEE_BPS
+
+        return result
+
+
+# =============================================================================
+# SLIPPAGE EXECUTION CALCULATOR
+# =============================================================================
+# All orderbook-based exchanges normalize their data and delegate here.
+# This ensures consistent calculation across all exchanges.
+# =============================================================================
+
+@dataclass
+class StandardizedOrderbook:
+    """
+    Common orderbook format for all exchanges.
+    
+    All exchange APIs should normalize their orderbook data to this format
+    before passing to ExecutionCalculator.
+    """
+    bids: List[Dict[str, float]]  # [{'price': float, 'qty': float}, ...] sorted best to worst
+    asks: List[Dict[str, float]]  # [{'price': float, 'qty': float}, ...] sorted best to worst (lowest first)
+    best_bid: float
+    best_ask: float
+    mid_price: float
+    timestamp: float = 0.0
+
+
+class ExecutionCalculator:
+    """
+    Shared calculation logic for all orderbook-based exchanges.
+    
+    Formulas:
+        mid_price = (best_bid + best_ask) / 2
+        avg_execution_price = total_cost / total_qty  (from walking the book)
+        slippage_bps = abs((avg_execution_price - mid_price) / mid_price) * 10000
+        total_cost_bps = (2 * slippage_bps) + open_fee_bps + close_fee_bps
+    """
+    
+    @staticmethod
+    def calculate_execution_cost(
+        orderbook: 'StandardizedOrderbook',
+        order_size_usd: float,
+        open_fee_bps: float = 0.0,
+        close_fee_bps: float = 0.0
+    ) -> Optional[Dict]:
+        """
+        Calculate execution cost from a standardized orderbook.
+        
+        Args:
+            orderbook: Standardized orderbook with bids/asks
+            order_size_usd: Order size in USD
+            open_fee_bps: Opening fee in basis points
+            close_fee_bps: Closing fee in basis points
+            
+        Returns:
+            Standardized result dict with slippage, fees, and execution details
+        """
+        if not orderbook or not orderbook.bids or not orderbook.asks:
+            return None
+        
+        mid_price = orderbook.mid_price
+        
+        # Calculate execution for both sides
+        buy_result = ExecutionCalculator._walk_book(
+            orderbook.asks, order_size_usd, mid_price, side='buy'
+        )
+        sell_result = ExecutionCalculator._walk_book(
+            orderbook.bids, order_size_usd, mid_price, side='sell'
+        )
         
         if not buy_result or not sell_result:
             return None
         
-        avg_slippage = (abs(buy_result['slippage_bps']) + abs(sell_result['slippage_bps'])) / 2
+        # Average slippage from both sides
+        avg_slippage_bps = (buy_result['slippage_bps'] + sell_result['slippage_bps']) / 2
         filled = buy_result['filled'] and sell_result['filled']
         
-        # Extended Exchange fees: 2.5 bps taker fee
-        open_fee_bps = 2.5
-        close_fee_bps = 2.5
-        effective_spread_bps = spread_bps / 2
-        total_cost_bps = avg_slippage + effective_spread_bps + open_fee_bps + close_fee_bps
+        # Calculate total cost
+        total_cost_bps = avg_slippage_bps + open_fee_bps + close_fee_bps
         
         return {
-            'executed': 'FULL' if filled else 'PARTIAL',
+            'executed': True if filled else 'PARTIAL',
             'mid_price': mid_price,
-            'spread_bps': spread_bps,
-            'slippage_bps': avg_slippage,
-            'effective_spread_bps': effective_spread_bps,
+            'best_bid': orderbook.best_bid,
+            'best_ask': orderbook.best_ask,
+            'slippage_bps': avg_slippage_bps,
             'open_fee_bps': open_fee_bps,
             'close_fee_bps': close_fee_bps,
             'total_cost_bps': total_cost_bps,
             'filled': filled,
             'buy': buy_result,
-            'sell': sell_result
+            'sell': sell_result,
+            'timestamp': orderbook.timestamp
         }
     
-    def _calculate_side(self, levels: List, order_size_usd: float, mid_price: float) -> Optional[Dict]:
-        """Calculate execution for one side of the book."""
+    @staticmethod
+    def _walk_book(
+        levels: List[Dict[str, float]],
+        order_size_usd: float,
+        mid_price: float,
+        side: str = 'buy'
+    ) -> Optional[Dict]:
+        
+        """
+        Walk through orderbook levels to calculate execution.
+        
+        Args:
+            levels: List of {'price': float, 'qty': float} dicts
+            order_size_usd: Order size in USD
+            mid_price: Mid price for slippage calculation
+            side: 'buy' or 'sell'
+            
+        Returns:
+            Execution result with avg_price, slippage_bps, filled status
+        """
+
         if not levels:
             return None
         
-        remaining_usd = order_size_usd
-        total_qty = 0
-        total_cost = 0
+        # Sort levels: asks ascending (best=lowest), bids descending (best=highest)
+        sorted_levels = sorted(
+            levels,
+            key=lambda x: x['price'],
+            reverse=(side == 'sell')
+        )
+        
+        # Calculate total cost 
+        # Gathered from walking the orderbook till the order is filled
+
+        unfilled_order_amount_usd = order_size_usd
+        total_qty = 0.0
+        total_cost = 0.0
         levels_used = 0
         
-        for level in levels:
-            price = float(level['price'])
-            qty = float(level['qty'])
+        for level in sorted_levels:
+            price = level['price']
+            qty = level['qty']
+            
+            if price <= 0 or qty <= 0:
+                continue
+            
             value_available = price * qty
             
-            if value_available >= remaining_usd:
-                qty_needed = remaining_usd / price
+            if unfilled_order_amount_usd <= value_available:
+                # This level can fill the remaining order
+                qty_needed = unfilled_order_amount_usd / price
                 total_qty += qty_needed
-                total_cost += remaining_usd
-                remaining_usd = 0
+                total_cost += unfilled_order_amount_usd
+                unfilled_order_amount_usd = 0
                 levels_used += 1
                 break
             else:
+                # Consume entire level
                 total_qty += qty
                 total_cost += value_available
-                remaining_usd -= value_available
+                unfilled_order_amount_usd -= value_available
                 levels_used += 1
         
-        filled_usd = order_size_usd - remaining_usd
-        avg_price = total_cost / total_qty if total_qty > 0 else 0
-        slippage_bps = abs((avg_price - mid_price) / mid_price) * 10000 if mid_price > 0 else 0
+        # Calculate results
+        filled_usd = order_size_usd - unfilled_order_amount_usd
+        avg_price = total_cost / total_qty 
+        
+        # Slippage = abs((avg_execution_price - mid_price) / mid_price) * 10000
+        slippage_bps = abs((avg_price - mid_price) / mid_price) * 10000 
         
         return {
-            'filled': remaining_usd == 0,
+            'filled': unfilled_order_amount_usd == 0,
             'filled_usd': filled_usd,
-            'unfilled_usd': remaining_usd,
+            'unfilled_usd': unfilled_order_amount_usd,
             'levels_used': levels_used,
             'avg_price': avg_price,
             'slippage_bps': slippage_bps
         }
 
+    @staticmethod
+    def calculate_hybrid_execution_cost(
+        primary_book: 'StandardizedOrderbook',
+        secondary_book: 'StandardizedOrderbook',
+        order_size_usd: float,
+        open_fee_bps: float = 0.0,
+        close_fee_bps: float = 0.0
+    ) -> Optional[Dict]:
+        """
+        Calculate execution cost by filling from primary book first, then secondary.
+        Straightforward "Stitch" logic: Fill what you can from Primary, then fill remainder from Secondary.
+        """
+        if not primary_book and not secondary_book:
+            return None
+            
+        # If primary missing, treat secondary as primary
+        if not primary_book:
+            return ExecutionCalculator.calculate_execution_cost(secondary_book, order_size_usd, open_fee_bps, close_fee_bps)
+        
+        # If secondary missing, normal calc on primary
+        if not secondary_book:
+             return ExecutionCalculator.calculate_execution_cost(primary_book, order_size_usd, open_fee_bps, close_fee_bps)
 
-class VariationalAPI:
-    """Client for Variational DEX market data."""
-    
-    BASE_URL = "https://omni-client-api.prod.ap-northeast-1.variational.io"
-    
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        })
-        self._stats_cache = None
-        self._cache_time = 0
-    
-    def get_stats(self) -> Optional[Dict]:
-        """Fetch market stats (cached for 1000 seconds)."""
-        import time
-        current_time = time.time()
-        if self._stats_cache and (current_time - self._cache_time) < 1000:
-            return self._stats_cache
-        
-        try:
-            url = f"{self.BASE_URL}/metadata/stats"
-            response = self.session.get(url, timeout=15)
-            if response.status_code != 200:
-                return None
-            self._stats_cache = response.json()
-            self._cache_time = current_time
-            return self._stats_cache
-        except Exception as e:
-            print(f"Variational API error: {e}")
-            return None
-    
-    def calculate_execution_cost(self, ticker: str, order_size_usd: float) -> Optional[Dict]:
-        """Calculate execution cost using pre-calculated bid/ask quotes with interpolation."""
-        stats = self.get_stats()
-        if not stats:
-            return None
-        
-        # Find the listing for the given ticker
-        listings = stats.get('listings', [])
-        listing = None
-        for l in listings:
-            if l.get('ticker') == ticker:
-                listing = l
-                break
-        
-        if not listing:
-            return None
-        
-        quotes = listing.get('quotes', {})
-        mark_price = float(listing.get('mark_price', 0))
-        
-        if mark_price <= 0:
-            return None
-        
-        # Build a list of (size, spread_bps) tuples from available quotes
-        size_spread_data = []
-        for size_key, size_val in [('size_1k', 1000), ('size_100k', 100000), ('size_1m', 1000000)]:
-            quote = quotes.get(size_key)
-            if quote:
-                bid = float(quote.get('bid', 0))
-                ask = float(quote.get('ask', 0))
-                if bid > 0 and ask > 0:
-                    spread = ask - bid
-                    spread_bps = (spread / mark_price) * 10000
-                    size_spread_data.append((size_val, spread_bps))
-        
-        if not size_spread_data:
-            return None
-        
-        # Sort by size
-        size_spread_data.sort(key=lambda x: x[0])
-        
-        # Interpolate/extrapolate to find spread for the given order size
-        if order_size_usd <= size_spread_data[0][0]:
-            # Use smallest bucket
-            spread_bps = size_spread_data[0][1]
-        elif order_size_usd >= size_spread_data[-1][0]:
-            # Extrapolate beyond largest bucket using slope from last two points
-            if len(size_spread_data) >= 2:
-                s1, sp1 = size_spread_data[-2]
-                s2, sp2 = size_spread_data[-1]
-                slope = (sp2 - sp1) / (s2 - s1) if s2 != s1 else 0
-                spread_bps = sp2 + slope * (order_size_usd - s2)
+        mid_price = primary_book.mid_price # Anchor to primary (fairer) price
+
+        # --- Helper for Hybrid Walk ---
+        def walk_hybrid(prim_levels, sec_levels, side):
+            # 1. Fill from Primary
+            prim_res = ExecutionCalculator._walk_book(prim_levels, order_size_usd, mid_price, side)
+            
+            # If fully filled, we are done
+            if prim_res['filled']:
+                return prim_res 
+            
+            # 2. Fill Remainder from Secondary
+            unfilled = prim_res['unfilled_usd']
+            filled_amount = prim_res['filled_usd']
+            
+            # Cost so far
+            avg_prim = prim_res['avg_price'] if prim_res['avg_price'] else 0
+            cost_prim = filled_amount # filled_usd is already the value in USD
+            qty_prim = filled_amount / avg_prim if avg_prim > 0 else 0
+            
+            # Determine threshold price from primary to filter secondary
+            # Sort primary levels same way _walk_book did
+            sorted_prim = sorted(prim_levels, key=lambda x: x['price'], reverse=(side == 'sell'))
+            levels_used = prim_res.get('levels_used', 0)
+            
+            last_prim_price = 0
+            if levels_used > 0 and levels_used <= len(sorted_prim):
+                last_prim_price = sorted_prim[levels_used - 1]['price']
             else:
-                spread_bps = size_spread_data[-1][1]
-        else:
-            # Interpolate between two brackets
-            for i in range(len(size_spread_data) - 1):
-                s1, sp1 = size_spread_data[i]
-                s2, sp2 = size_spread_data[i + 1]
-                if s1 <= order_size_usd <= s2:
-                    ratio = (order_size_usd - s1) / (s2 - s1)
-                    spread_bps = sp1 + ratio * (sp2 - sp1)
-                    break
-        
-        # Slippage is half the spread (entry only)
-        slippage_bps = spread_bps / 2
-        
-        # Get best bid/ask from smallest bucket (Top of Book) for mid_price calculation
-        quote_1k = quotes.get('size_1k') or quotes.get('size_100k') or quotes.get('size_1m')
-        
-        bid = float(quote_1k.get('bid', 0)) if quote_1k else mark_price
-        ask = float(quote_1k.get('ask', 0)) if quote_1k else mark_price
-        
-        if bid > 0 and ask > 0:
-            mid_price = (bid + ask) / 2
-        else:
-            mid_price = mark_price
-        
+                 # If full fill or something odd, use worst price
+                 last_prim_price = sorted_prim[-1]['price'] if sorted_prim else 0
+
+            # Filter secondary to avoid double counting / crossing
+            # If Buy: only take asks > last_prim_price
+            # If Sell: only take bids < last_prim_price
+
+            # Find qty used at last price in primary to deduct from secondary if overlap
+            qty_at_boundary = 0
+            for l in prim_levels:
+                if l['price'] == last_prim_price:
+                    qty_at_boundary += l['qty']
+
+            filtered_sec = []
+            for lvl in sec_levels:
+                price = lvl['price']
+                qty = lvl['qty']
+                include = False
+                adjusted_qty = qty
+                
+                if side == 'buy':
+                    if price > last_prim_price:
+                        include = True
+                    elif price == last_prim_price:
+                        # Overlap
+                        adjusted_qty = max(0, qty - qty_at_boundary)
+                        if adjusted_qty > 0: include = True
+                elif side == 'sell':
+                    if price < last_prim_price:
+                        include = True
+                    elif price == last_prim_price:
+                         # Overlap
+                        adjusted_qty = max(0, qty - qty_at_boundary)
+                        if adjusted_qty > 0: include = True
+                
+                if include:
+                    new_lvl = lvl.copy()
+                    new_lvl['qty'] = adjusted_qty
+                    filtered_sec.append(new_lvl)
+            
+            sec_res = ExecutionCalculator._walk_book(filtered_sec, unfilled, mid_price, side)
+            
+            if sec_res['filled']:
+                # Combine
+                cost_sec = sec_res['filled_usd'] # Value in USD
+                qty_sec = sec_res['filled_usd'] / sec_res['avg_price'] if sec_res['avg_price'] > 0 else 0
+                
+                total_qty = qty_prim + qty_sec
+                total_cost = cost_prim + cost_sec
+                final_avg = total_cost / total_qty if total_qty > 0 else 0
+                
+                slip = abs((final_avg - mid_price) / mid_price) * 10000
+                
+                return {
+                    'filled': True,
+                    'filled_usd': order_size_usd,
+                    'avg_price': final_avg,
+                    'slippage_bps': slip
+                }
+            else:
+                return {'filled': False, 'slippage_bps': 0}
+
+        buy_result = walk_hybrid(primary_book.asks, secondary_book.asks, 'buy')
+        sell_result = walk_hybrid(primary_book.bids, secondary_book.bids, 'sell')
+
+        if not buy_result or not sell_result:
+            return None
+
+        avg_slippage_bps = (buy_result['slippage_bps'] + sell_result['slippage_bps']) / 2
+        filled = buy_result['filled'] and sell_result['filled']
+        total_cost_bps = avg_slippage_bps + open_fee_bps + close_fee_bps
+
         return {
-            'executed': True,
+            'executed': True if filled else 'PARTIAL',
             'mid_price': mid_price,
-            'mark_price': mark_price,
-            'best_bid': bid,
-            'best_ask': ask,
-            'slippage_bps': slippage_bps,
-            'fee_bps': VARIATIONAL_TAKER_FEE_BPS,
-            'filled': True,
-            'buy': {
-                'filled': True,
-                'filled_usd': order_size_usd,
-                'unfilled_usd': 0,
-                'levels_used': 1,
-                'avg_price': ask,
-                'slippage_bps': slippage_bps
-            },
-            'sell': {
-                'filled': True,
-                'filled_usd': order_size_usd,
-                'unfilled_usd': 0,
-                'levels_used': 1,
-                'avg_price': bid,
-                'slippage_bps': slippage_bps
-            }
+            'slippage_bps': avg_slippage_bps,
+            'open_fee_bps': open_fee_bps,
+            'close_fee_bps': close_fee_bps,
+            'total_cost_bps': total_cost_bps,
+            'filled': filled,
+            'buy': buy_result,
+            'sell': sell_result,
+            'timestamp': primary_book.timestamp
         }
+
+
+
 
 class FeeComparator:
     def __init__(self):
+
         self.hyperliquid = HyperliquidAPI()
         self.lighter = LighterAPI()
-        self.paradex = ParadexAPI()
         self.aster = AsterAPI()
         self.avantis = AvantisStatic()
         self.ostium = OstiumAPI()
         self.extended = ExtendedAPI()
-        self.variational = VariationalAPI()
 
-    def compare_asset(self, asset_key: str, order_size_usd: float) -> Dict:
+    def compare_asset(self, asset_key: str, order_size_usd: float, order_type: str = 'taker') -> Dict:
         config = ASSETS.get(asset_key.upper())
         if not config: return None
+
+
 
         result = {
             'asset': config.name,
@@ -894,45 +1020,27 @@ class FeeComparator:
             'order_size_usd': order_size_usd,
             'hyperliquid': None,
             'lighter': None,
-            'paradex': None,
             'aster': None,
             'avantis': None,
             'ostium': None,
             'extended': None,
-            'variational': None,
             # Include symbol info for display
             'symbols': {
                 'hyperliquid': config.hyperliquid_symbol,
                 'lighter': config.symbol_key if config.lighter_market_id else None,
-                'paradex': f"{config.paradex_symbol}-USD-PERP" if config.paradex_symbol else None,
                 'aster': config.aster_symbol,
                 'avantis': config.symbol_key,
                 'ostium': config.ostium_symbol,
-                'extended': config.extended_symbol,
-                'variational': config.variational_symbol
+                'extended': config.extended_symbol
             }
         }
 
         # --- Hyperliquid ---
         if config.hyperliquid_symbol:
-            sig_figs_options = [None, 4, 3, 2]
-            anchor_mid_price = None
-            for sig_figs in sig_figs_options:
-                hl_orderbook, is_xyz = self.hyperliquid.get_orderbook(config.hyperliquid_symbol, n_sig_figs=sig_figs)
-                if hl_orderbook is None: continue
-                calc_result = self.hyperliquid.calculate_execution_cost(hl_orderbook, order_size_usd, anchor_mid_price=anchor_mid_price)
-                if calc_result:
-                    if anchor_mid_price is None:
-                        anchor_mid_price = calc_result['mid_price']
-                    calc_result['is_xyz'] = is_xyz
-                    calc_result['symbol'] = f"xyz:{config.hyperliquid_symbol}" if is_xyz else config.hyperliquid_symbol
-                    if calc_result['filled']:
-                        result['hyperliquid'] = calc_result
-                        # Update symbol in symbols dict
-                        result['symbols']['hyperliquid'] = calc_result['symbol']
-                        break
-                    result['hyperliquid'] = calc_result
-                    result['symbols']['hyperliquid'] = calc_result['symbol']
+            hyperliquid_result = self.hyperliquid.get_optimal_execution(config.hyperliquid_symbol, order_size_usd)
+            if hyperliquid_result:
+                result['hyperliquid'] = hyperliquid_result
+                result['symbols']['hyperliquid'] = hyperliquid_result['symbol']
 
         # --- Lighter ---
         if config.lighter_market_id:
@@ -942,13 +1050,7 @@ class FeeComparator:
                 lighter_result['symbol'] = config.symbol_key
             result['lighter'] = lighter_result
 
-        # --- Paradex ---
-        if config.paradex_symbol:
-            paradex_orderbook = self.paradex.get_orderbook(config.paradex_symbol)
-            paradex_result = self.paradex.calculate_execution_cost(paradex_orderbook, order_size_usd)
-            if paradex_result:
-                paradex_result['symbol'] = f"{config.paradex_symbol}-USD-PERP"
-            result['paradex'] = paradex_result
+
 
         # --- Aster ---
         if config.aster_symbol:
@@ -979,12 +1081,13 @@ class FeeComparator:
                 extended_result['symbol'] = config.extended_symbol
             result['extended'] = extended_result
 
-        # --- Variational ---
-        if config.variational_symbol:
-            variational_result = self.variational.calculate_execution_cost(config.variational_symbol, order_size_usd)
-            if variational_result:
-                variational_result['symbol'] = config.variational_symbol
-            result['variational'] = variational_result
+        # Override for Maker orders (Zero Slippage)
+        if order_type == 'maker':
+            for ex in ['hyperliquid', 'lighter', 'aster', 'avantis', 'ostium', 'extended']:
+                if result.get(ex):
+                    result[ex]['slippage_bps'] = 0.0
+                    if 'buy' in result[ex]: result[ex]['buy']['slippage_bps'] = 0.0
+                    if 'sell' in result[ex]: result[ex]['sell']['slippage_bps'] = 0.0
 
         return result
 
@@ -1012,7 +1115,6 @@ def get_assets():
             'exchanges': {
                 'hyperliquid': config.hyperliquid_symbol is not None,
                 'lighter': config.lighter_market_id is not None,
-                'paradex': config.paradex_symbol is not None,
                 'aster': config.aster_symbol is not None,
                 'avantis': True,
                 'ostium': config.ostium_symbol is not None
@@ -1028,10 +1130,12 @@ def compare():
     asset = data.get('asset', '').upper()
     order_size = float(data.get('order_size', 100000))
     
+    order_type = data.get('order_type', 'taker').lower()
+    
     if asset not in ASSETS:
         return jsonify({'error': f'Asset {asset} not found'}), 400
     
-    result = comparator.compare_asset(asset, order_size)
+    result = comparator.compare_asset(asset, order_size, order_type=order_type)
     
     if not result:
         return jsonify({'error': 'Failed to compare asset'}), 500
@@ -1040,12 +1144,27 @@ def compare():
     exchanges = []
     
     # Fee structures
-    fee_structure = {
-        'hyperliquid': {'open': HYPERLIQUID_TAKER_FEE_BPS, 'close': 0.0},
-        'lighter': {'open': LIGHTER_TAKER_FEE_BPS, 'close': 0.0},
-        'paradex': {'open': PARADEX_TAKER_FEE_BPS, 'close': 0.0},
-        'aster': {'open': ASTER_TAKER_FEE_BPS, 'close': 0.0},
-    }
+    if order_type == 'maker':
+        # MAKER Mode: Use Maker Fees for Orderbook, Taker/Flat for Oracle
+        fee_structure = {
+            'hyperliquid': {'open': HYPERLIQUID_MAKER_FEE_BPS, 'close': HYPERLIQUID_MAKER_FEE_BPS},
+            'lighter': {'open': LIGHTER_MAKER_FEE_BPS, 'close': LIGHTER_MAKER_FEE_BPS},
+            'aster': {'open': ASTER_MAKER_FEE_BPS, 'close': ASTER_MAKER_FEE_BPS},
+            # Extended uses Maker Fee (0.0)
+            'extended': {'open': EXTENDED_MAKER_FEE_BPS, 'close': EXTENDED_MAKER_FEE_BPS} 
+        }
+    else:
+        # TAKER Mode: Standard Taker Fees
+        fee_structure = {
+            'hyperliquid': {'open': HYPERLIQUID_TAKER_FEE_BPS, 'close': 0.9},
+            'lighter': {'open': LIGHTER_TAKER_FEE_BPS, 'close': 0.0},
+            'aster': {'open': ASTER_TAKER_FEE_BPS, 'close': 0.0},
+            'extended': {'open': 2.5, 'close': 2.5} # Explicitly set Extended Taker here if not standard
+        }
+    
+    # Extended Taker defaults (if not set above, but I set it above for safety)
+    if 'extended' not in fee_structure and order_type != 'maker':
+         fee_structure['extended'] = {'open': 2.5, 'close': 2.5}
     
     # Ostium has variable fees per asset
     os_data = result.get('ostium')
@@ -1063,7 +1182,13 @@ def compare():
             'close': av.get('close_fee_bps', 0)
         }
     
-    for exchange_name in ['hyperliquid', 'lighter', 'paradex', 'aster', 'avantis', 'ostium', 'variational']:
+    # For Extended, ensure it's in fee_structure if not added by static block
+    if result.get('extended') and 'extended' not in fee_structure:
+        # Fallback if not handled in if/else above
+        fee_structure['extended'] = {'open': 2.5 if order_type != 'maker' else EXTENDED_MAKER_FEE_BPS, 
+                                   'close': 2.5 if order_type != 'maker' else EXTENDED_MAKER_FEE_BPS}
+    
+    for exchange_name in ['hyperliquid', 'lighter', 'aster', 'avantis', 'ostium', 'extended']:
         ex_data = result.get(exchange_name)
         if ex_data:
             fees = fee_structure.get(exchange_name, {'open': 0, 'close': 0})
