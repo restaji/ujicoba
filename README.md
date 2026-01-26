@@ -17,9 +17,10 @@ This tool compares average slippage and trading fees across 8 decentralized perp
 
 ### Fundamentals
 - **Mid Price**: `(Best Bid + Best Ask) / 2`
-- **Average Slippage**: `|Avg Execution Price - Mid Price| / Mid Price × 10000` (in bps)
+- **Average Slippage**: `|Avg Execution Price - Mid Price| / Mid Price × 10000` (in bps, which retrieved from buy side and sell side)
+  
 
-### Calculation Components
+### 1. Calculation Components
 
 1. **Average Slippage Calculation**:
    - **Orderbook DEXs**: Uses live orderbook depth to simulate partial or full fills.
@@ -44,6 +45,7 @@ Fees are applied for both opening and closing positions.
 
 ### 3. Total Cost
 The final result is expressed in bps: `Effective Spread + Fees`.
+
 *Effective Spread = 2 × Average Slippage* (estimated round-trip cost).
 
 ## Supported Assets
