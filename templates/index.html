@@ -80,10 +80,10 @@
             <div class="definitions">
                 <h4>📖 Definitions</h4>
                 <ul>
-                    <li><strong>Average Slippage:</strong> Average price impact (Buy & Sell)</li>
-                    <li><strong>Effective Spread:</strong> Round-trip cost (2 × Average Slippage)</li>
+                    <li><strong>Buy Slippage:</strong> Price impact when buying </li>
+                    <li><strong>Sell Slippage:</strong> Price impact when selling </li>
+                    <li><strong>Effective Spread:</strong> Round-trip cost (Buy Slippage + Sell Slippage)</li>
                     <li><strong>Total Cost:</strong> Effective Spread + Opening Fee + Closing Fee</li>
-
                 </ul>
             </div>
         </section>
@@ -314,8 +314,12 @@
             </div>
             <div class="card-body">
                 <div class="metric">
-                    <span class="label">Average Slippage</span>
-                    <span class="value">${formatNumber(exData.slippage_bps || 0)} bps</span>
+                    <span class="label">Buy Slippage</span>
+                    <span class="value">${formatNumber(exData.buy_slippage_bps || exData.slippage_bps || 0)} bps</span>
+                </div>
+                <div class="metric">
+                    <span class="label">Sell Slippage</span>
+                    <span class="value">${formatNumber(exData.sell_slippage_bps || exData.slippage_bps || 0)} bps</span>
                 </div>
                 <div class="metric">
                     <span class="label">Fees (Open + Close)</span>
