@@ -29,7 +29,7 @@ This tool compares slippage and trading fees across 6 decentralized perpetual ex
    - **Oracle DEXs**: Uses the bid/ask spread from the oracle
 
 2. **Total Cost Calculation**:
-   - Formula: `Total Cost = Effective Spread + Opening Fee + Closing Fee`
+   - **Formula**: `Total Cost = Effective Spread + Opening Fee + Closing Fee`
    - **Effective Spread**: `Buy Slippage + Sell Slippage` (round-trip cost)
    - **Opening/Closing Fees**: Determined by the selected Order Type (Taker or Maker)
 
@@ -72,7 +72,7 @@ python rwa_fee_comparisson.py
 
 ## Usage
 
-1. Open `http://127.0.0.1:5001` in your browser
+1. Open `---` in your browser
 2. Select an asset from the dropdown
 3. Choose order size ($10K, $100K, $1M, $10M)
 4. Results auto-refresh on selection
