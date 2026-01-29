@@ -9,6 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 </head>
 
 <body>
@@ -82,8 +83,7 @@
                 <ul>
                     <li><strong>Buy Slippage:</strong> Price impact when buying </li>
                     <li><strong>Sell Slippage:</strong> Price impact when selling </li>
-                    <li><strong>Effective Spread:</strong> Round-trip cost (Buy Slippage + Sell Slippage)</li>
-                    <li><strong>Total Cost:</strong> Effective Spread + Opening Fee + Closing Fee</li>
+                    <li><strong>Total Cost:</strong> Buy Slippage + Sell Slippage + Opening Fee + Closing Fee</li>
                 </ul>
             </div>
         </section>
@@ -109,6 +109,28 @@
         // Selected state
         let selectedOrderSize = 100000;
         let selectedOrderType = 'taker';
+
+        // Initialize Socket.IO connection
+        const socket = io();
+
+        // Socket.IO event handlers
+        socket.on('connect', () => {
+            console.log('WebSocket connected');
+        });
+
+        socket.on('compare_result', (data) => {
+            loadingIndicator.style.display = 'none';
+            if (data.error) {
+                alert(data.error);
+                return;
+            }
+            displayResults(data);
+        });
+
+        socket.on('compare_error', (data) => {
+            loadingIndicator.style.display = 'none';
+            alert(data.error || 'An error occurred');
+        });
 
         // Exchange logos and colors
         const exchangeConfig = {
@@ -202,40 +224,20 @@
             }
         });
 
-        // Compare slippage
-        async function compareSlippage() {
+        // Compare slippage via WebSocket
+        function compareSlippage() {
             const asset = assetSelect.value;
             if (!asset) return;
 
             loadingIndicator.style.display = 'flex';
             resultsSection.style.display = 'none';
 
-            try {
-                const response = await fetch('/api/compare', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        asset: asset,
-                        order_size: selectedOrderSize,
-                        order_type: selectedOrderType
-                    })
-                });
-
-                const data = await response.json();
-
-                if (data.error) {
-                    alert(data.error);
-                    return;
-                }
-
-                displayResults(data);
-
-            } catch (error) {
-                console.error('Failed to compare:', error);
-                alert('Failed to compare slippage. Please try again.');
-            } finally {
-                loadingIndicator.style.display = 'none';
-            }
+            // Emit compare request via WebSocket
+            socket.emit('compare', {
+                asset: asset,
+                order_size: selectedOrderSize,
+                order_type: selectedOrderType
+            });
         }
 
         // Display results
@@ -266,10 +268,18 @@
             exchangeGrid.innerHTML = '';
             const exchanges = ['hyperliquid', 'lighter', 'aster', 'avantis', 'ostium', 'extended'];
 
-            // Filter and sort exchanges by total_cost_bps
+            // Filter and sort exchanges: full fills first (by cost), then partial fills (by cost)
             const availableExchanges = exchanges
                 .filter(exchange => data[exchange])
                 .sort((a, b) => {
+                    const aFilled = data[a].executed !== 'PARTIAL';
+                    const bFilled = data[b].executed !== 'PARTIAL';
+
+                    // Full fills come first
+                    if (aFilled && !bFilled) return -1;
+                    if (!aFilled && bFilled) return 1;
+
+                    // Within same fill status, sort by total cost
                     const costA = data[a].total_cost_bps || 0;
                     const costB = data[b].total_cost_bps || 0;
                     return costA - costB;
@@ -325,10 +335,6 @@
                     <span class="label">Fees (Open + Close)</span>
                     <span class="value">${formatNumber(fees_bps)} bps</span>
                 </div>
-                <div class="metric">
-                    <span class="label">Effective Spread</span>
-                    <span class="value">${formatNumber(exData.effective_spread_bps || 0)} bps</span>
-                </div>
 
                     <div class="metric total">
                         <span class="label">Total Cost</span>
@@ -344,7 +350,15 @@
                         <span>${new Date(exData.timestamp * 1000).toLocaleTimeString()}</span>
                     </div>` : ''}
                     <div class="fill-status ${isPartial ? 'partial' : 'filled'}">
-                        ${isPartial ? '⚠️ PARTIAL FILL' : '✓ Full Fill'}
+                        ${isPartial ?
+                    `⚠️ PARTIAL FILL<br>
+                    ${!exData.buy?.filled ? `<span style="font-size: 0.85rem; display: block; margin-top: 4px;">
+                        Buy Side: ${formatUSD(exData.buy?.filled_usd || 0)} of ${formatUSD(orderSize)} filled
+                    </span>` : ''}
+                    ${!exData.sell?.filled ? `<span style="font-size: 0.85rem; display: block; ${exData.buy?.filled ? 'margin-top: 4px;' : ''}">
+                        Sell Side: ${formatUSD(exData.sell?.filled_usd || 0)} of ${formatUSD(orderSize)} filled
+                    </span>` : ''}` :
+                    '✓ Full Fill'}
                     </div>
                 </div>
             `;

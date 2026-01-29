@@ -17,6 +17,7 @@ Run with: python rwa_fee_comparisson.py
 
 from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 import requests
 import json
 import time
@@ -25,6 +26,7 @@ from dataclasses import dataclass, asdict
 
 app = Flask(__name__)
 CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Taker Fees
 HYPERLIQUID_TAKER_FEE_BPS = 0.9
@@ -38,11 +40,11 @@ LIGHTER_MAKER_FEE_BPS = 0.0
 ASTER_MAKER_FEE_BPS = 0.5
 EXTENDED_MAKER_FEE_BPS = 0.0
 
-# Ostium fees vary by asset class (from docs)
+# Ostium fees vary by asset class
 OSTIUM_FEES_BPS = {
     # Commodities
-    'XAUUSD': 1.5,   # Gold (XAU) --Discounted by 50%
-    'XAGUSD': 7.5,  # Silver (XAG) --Discounted by 50%
+    'XAUUSD': 3.0,   
+    'XAGUSD': 15.0, 
     # Forex
     'EURUSD': 3.0,
     'GBPUSD': 3.0,
@@ -474,7 +476,7 @@ class AsterAPI:
         self.headers = {'Content-Type': 'application/json'}
 
     def get_orderbook(self, symbol: str) -> Optional[Dict]:
-        params = {'symbol': symbol, 'limit': 100}
+        params = {'symbol': symbol, 'limit': 1000}  
         try:
             response = requests.get(self.base_url, headers=self.headers, params=params, timeout=1000)
             if response.status_code != 200:
@@ -570,7 +572,7 @@ class AvantisStatic:
             close_fee_bps = 4.5
             spread_bps = 2.5
 
-        slippage_bps = spread_bps / 2.0
+        slippage_bps = spread_bps
         total_cost_bps = slippage_bps + open_fee_bps + close_fee_bps
 
         return {
@@ -601,7 +603,6 @@ class ExtendedAPI:
         })
     
     def get_orderbook(self, market: str) -> Optional[Dict]:
-        """Fetch orderbook for a given market (e.g., 'XAU-USD')."""
         try:
             url = f"{self.BASE_URL}/info/markets/{market}/orderbook"
             response = self.session.get(url, timeout=1000)
@@ -616,11 +617,9 @@ class ExtendedAPI:
             return None
     
     def normalize_orderbook(self, orderbook: Dict) -> Optional[StandardizedOrderbook]:
-        """Normalize Extended orderbook to standard format."""
         if not orderbook:
             return None
         
-        # Extended uses 'bid' and 'ask' keys (not 'bids'/'asks')
         bids = orderbook.get('bid', [])
         asks = orderbook.get('ask', [])
         
@@ -745,6 +744,21 @@ class ExecutionCalculator:
         avg_slippage_bps = (buy_slippage_bps + sell_slippage_bps) / 2
         filled = buy_result['filled'] and sell_result['filled']
         
+        # Determine which side is unfilled (if any)
+        buy_unfilled = buy_result['unfilled_usd']
+        sell_unfilled = sell_result['unfilled_usd']
+        buy_partial = not buy_result['filled']
+        sell_partial = not sell_result['filled']
+        
+        if buy_partial and sell_partial:
+            unfilled_side = 'both'
+        elif buy_partial:
+            unfilled_side = 'buy'
+        elif sell_partial:
+            unfilled_side = 'sell'
+        else:
+            unfilled_side = None  # Both fully filled
+        
         # Calculate total cost
         total_cost_bps = avg_slippage_bps + open_fee_bps + close_fee_bps
         
@@ -760,6 +774,10 @@ class ExecutionCalculator:
             'close_fee_bps': close_fee_bps,
             'total_cost_bps': total_cost_bps,
             'filled': filled,
+            'order_size_usd': order_size_usd,
+            'filled_usd': min(buy_result['filled_usd'], sell_result['filled_usd']),
+            'unfilled_usd': max(buy_unfilled, sell_unfilled),
+            'unfilled_side': unfilled_side,
             'buy': buy_result,
             'sell': sell_result,
             'timestamp': orderbook.timestamp
@@ -1173,7 +1191,9 @@ def compare():
         if ex_data:
             fees = fee_structure.get(exchange_name, {'open': 0, 'close': 0})
             slippage = ex_data.get('slippage_bps', 0)
-            effective_spread = 2 * slippage
+            
+            # Avantis: slippage only occurs once 
+            effective_spread = slippage if exchange_name == 'avantis' else 2 * slippage
             total_cost = effective_spread + fees['open'] + fees['close']
             
             ex_data['effective_spread_bps'] = effective_spread
@@ -1199,10 +1219,138 @@ def compare():
     return jsonify(result)
 
 
+# =============================================================================
+# WEBSOCKET EVENT HANDLERS
+# =============================================================================
+
+@socketio.on('compare')
+def handle_compare(data):
+    """Handle WebSocket compare request."""
+    try:
+        asset = data.get('asset')
+        order_size = data.get('order_size', 100000)
+        order_type = data.get('order_type', 'taker')
+        
+        if not asset or asset not in ASSETS:
+            emit('compare_error', {'error': f'Unknown asset: {asset}'})
+            return
+        
+        config = ASSETS[asset]
+        result = {
+            'asset': asset,
+            'name': config.name,
+            'order_size_usd': order_size,
+            'order_type': order_type
+        }
+        
+        # Fetch data from all exchanges (reusing existing logic)
+        hl_api = HyperliquidAPI()
+        lighter_api = LighterAPI()
+        aster_api = AsterAPI()
+        avantis_static = AvantisStatic()
+        ostium_api = OstiumAPI()
+        extended_api = ExtendedAPI()
+        
+        # Hyperliquid
+        if config.hyperliquid_symbol:
+            hl_result = hl_api.get_optimal_execution(config.hyperliquid_symbol, order_size)
+            if hl_result:
+                result['hyperliquid'] = hl_result
+        
+        # Lighter
+        if config.lighter_market_id:
+            lighter_book = lighter_api.get_orderbook(config.lighter_market_id)
+            if lighter_book:
+                lighter_result = lighter_api.calculate_execution_cost(lighter_book, order_size)
+                if lighter_result:
+                    result['lighter'] = lighter_result
+        
+        # Aster
+        if config.aster_symbol:
+            aster_book = aster_api.get_orderbook(config.aster_symbol)
+            if aster_book:
+                aster_result = aster_api.calculate_execution_cost(aster_book, order_size)
+                if aster_result:
+                    result['aster'] = aster_result
+        
+        # Avantis (static fees)
+        avantis_result = avantis_static.calculate_cost(asset, order_size)
+        if avantis_result:
+            result['avantis'] = avantis_result
+        
+        # Ostium
+        if config.ostium_symbol:
+            ostium_result = ostium_api.calculate_execution_cost(config.ostium_symbol, order_size)
+            if ostium_result:
+                result['ostium'] = ostium_result
+        
+        # Extended
+        if config.extended_symbol:
+            extended_book = extended_api.get_orderbook(config.extended_symbol)
+            if extended_book:
+                extended_result = extended_api.calculate_execution_cost(extended_book, order_size)
+                if extended_result:
+                    result['extended'] = extended_result
+        
+        # Calculate total costs and determine winner (same logic as HTTP endpoint)
+        exchanges = []
+        
+        if order_type == 'maker':
+            fee_structure = {
+                'hyperliquid': {'open': HYPERLIQUID_MAKER_FEE_BPS, 'close': HYPERLIQUID_MAKER_FEE_BPS},
+                'lighter': {'open': LIGHTER_MAKER_FEE_BPS, 'close': LIGHTER_MAKER_FEE_BPS},
+                'aster': {'open': ASTER_MAKER_FEE_BPS, 'close': ASTER_MAKER_FEE_BPS},
+                'extended': {'open': EXTENDED_MAKER_FEE_BPS, 'close': EXTENDED_MAKER_FEE_BPS}
+            }
+        else:
+            fee_structure = {
+                'hyperliquid': {'open': HYPERLIQUID_TAKER_FEE_BPS, 'close': HYPERLIQUID_TAKER_FEE_BPS},
+                'lighter': {'open': LIGHTER_TAKER_FEE_BPS, 'close': 0.0},
+                'aster': {'open': ASTER_TAKER_FEE_BPS, 'close': 0.0},
+                'extended': {'open': EXTENDED_TAKER_FEE_BPS, 'close': EXTENDED_TAKER_FEE_BPS}
+            }
+        
+        os_data = result.get('ostium')
+        if os_data:
+            fee_structure['ostium'] = {'open': os_data.get('fee_bps', 5.0), 'close': 0.0}
+        
+        av = result.get('avantis')
+        if av:
+            fee_structure['avantis'] = {'open': av.get('open_fee_bps', 0), 'close': av.get('close_fee_bps', 0)}
+        
+        for exchange_name in ['hyperliquid', 'lighter', 'aster', 'avantis', 'ostium', 'extended']:
+            ex_data = result.get(exchange_name)
+            if ex_data:
+                fees = fee_structure.get(exchange_name, {'open': 0, 'close': 0})
+                slippage = ex_data.get('slippage_bps', 0)
+                effective_spread = slippage if exchange_name == 'avantis' else 2 * slippage
+                total_cost = effective_spread + fees['open'] + fees['close']
+                
+                ex_data['effective_spread_bps'] = effective_spread
+                ex_data['open_fee_bps'] = fees['open']
+                ex_data['close_fee_bps'] = fees['close']
+                ex_data['total_cost_bps'] = total_cost
+                ex_data['exchange'] = exchange_name
+                
+                if ex_data.get('executed') != 'PARTIAL':
+                    exchanges.append({'name': exchange_name, 'total_cost': total_cost, 'filled': ex_data.get('filled', True)})
+        
+        if exchanges:
+            winner = min(exchanges, key=lambda x: x['total_cost'])
+            result['winner'] = winner['name']
+            result['winner_cost_bps'] = winner['total_cost']
+        
+        emit('compare_result', result)
+        
+    except Exception as e:
+        emit('compare_error', {'error': str(e)})
+
+
 if __name__ == '__main__':
     print("\n" + "=" * 60)
     print("🚀 FIXED FEE & AVERAGE SLIPPAGE COMPARISON API SERVER")
     print("=" * 60)
     print("Open http://127.0.0.1:5001 in your browser")
+    print("WebSocket support enabled")
     print("=" * 60 + "\n")
-    app.run(debug=True, port=5001)
+    socketio.run(app, debug=True, port=5001)
