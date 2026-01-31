@@ -1224,6 +1224,85 @@ def compare():
     return jsonify(result)
 
 
+@app.route('/api/compare/<asset>', methods=['GET'])
+def compare_get(asset):
+    """
+    GET endpoint for comparing slippage across exchanges.
+    
+    URL: /api/compare/<asset>?size=100000&order_type=taker
+    
+    Parameters:
+        asset (path): Asset symbol (e.g., XAU, XAG, AAPL, NVDA)
+        size (query): Order size in USD (default: 100000)
+        order_type (query): 'taker' or 'maker' (default: taker)
+    
+    Example:
+        GET /api/compare/XAU?size=50000
+        GET /api/compare/NVDA?size=100000&order_type=maker
+    """
+    asset = asset.upper()
+    order_size = float(request.args.get('size', 1000000))
+    order_type = request.args.get('order_type', 'taker').lower()
+    
+    if asset not in ASSETS:
+        return jsonify({'error': f'Asset {asset} not found', 'available_assets': list(ASSETS.keys())}), 400
+    
+    result = comparator.compare_asset(asset, order_size, order_type=order_type)
+    
+    if not result:
+        return jsonify({'error': 'Failed to compare asset'}), 500
+    
+    # Calculate totals and determine winner (same logic as POST endpoint)
+    exchanges = []
+    
+    if order_type == 'maker':
+        fee_structure = {
+            'hyperliquid': {'open': HYPERLIQUID_MAKER_FEE_BPS, 'close': HYPERLIQUID_MAKER_FEE_BPS},
+            'lighter': {'open': LIGHTER_MAKER_FEE_BPS, 'close': LIGHTER_MAKER_FEE_BPS},
+            'aster': {'open': ASTER_MAKER_FEE_BPS, 'close': ASTER_MAKER_FEE_BPS},
+            'extended': {'open': EXTENDED_MAKER_FEE_BPS, 'close': EXTENDED_MAKER_FEE_BPS}
+        }
+    else:
+        fee_structure = {
+            'hyperliquid': {'open': HYPERLIQUID_TAKER_FEE_BPS, 'close': HYPERLIQUID_TAKER_FEE_BPS},
+            'lighter': {'open': LIGHTER_TAKER_FEE_BPS, 'close': 0.0},
+            'aster': {'open': ASTER_TAKER_FEE_BPS, 'close': 0.0},
+            'extended': {'open': EXTENDED_TAKER_FEE_BPS, 'close': EXTENDED_TAKER_FEE_BPS}
+        }
+    
+    os_data = result.get('ostium')
+    if os_data:
+        fee_structure['ostium'] = {'open': os_data.get('fee_bps', 5.0), 'close': 0.0}
+    
+    av = result.get('avantis')
+    if av:
+        fee_structure['avantis'] = {'open': av.get('open_fee_bps', 0), 'close': av.get('close_fee_bps', 0)}
+    
+    for exchange_name in ['hyperliquid', 'lighter', 'aster', 'avantis', 'ostium', 'extended']:
+        ex_data = result.get(exchange_name)
+        if ex_data:
+            fees = fee_structure.get(exchange_name, {'open': 0, 'close': 0})
+            slippage = ex_data.get('slippage_bps', 0)
+            effective_spread = slippage if exchange_name == 'avantis' else 2 * slippage
+            total_cost = effective_spread + fees['open'] + fees['close']
+            
+            ex_data['effective_spread_bps'] = effective_spread
+            ex_data['open_fee_bps'] = fees['open']
+            ex_data['close_fee_bps'] = fees['close']
+            ex_data['total_cost_bps'] = total_cost
+            ex_data['exchange'] = exchange_name
+            
+            if ex_data.get('executed') != 'PARTIAL':
+                exchanges.append({'name': exchange_name, 'total_cost': total_cost, 'filled': ex_data.get('filled', True)})
+    
+    if exchanges:
+        winner = min(exchanges, key=lambda x: x['total_cost'])
+        result['winner'] = winner['name']
+        result['winner_cost_bps'] = winner['total_cost']
+    
+    return jsonify(result)
+
+
 # =============================================================================
 # WEBSOCKET EVENT HANDLERS
 # =============================================================================
