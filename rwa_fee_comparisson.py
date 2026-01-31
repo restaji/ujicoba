@@ -116,6 +116,11 @@ class OstiumAPI:
             "Content-Type": "application/json",
             "Accept": "application/json"
         })
+        # Disable SSL verification for macOS certificate issues
+        self.session.verify = False
+        # Suppress SSL warning
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     
     def get_fee_bps(self, ostium_symbol: str) -> float:
         """Get the opening fee for an Ostium asset based on their fee schedule."""
