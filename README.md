@@ -60,6 +60,31 @@ The final result is expressed in bps: `Effective Spread + Fees`.
 | **Stocks (MAG7)** | AAPL, MSFT, GOOG, AMZN, META, NVDA, TSLA |
 | **Other** | COIN |
 
+## API Endpoints
+
+### GET `/api/compare/<asset>`
+
+Compare execution costs for a specific asset.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `asset` | path | required | Asset symbol (XAU, XAG, NVDA, etc.) |
+| `size` | query | 1000000 | Order size in USD ($1M default) |
+| `order_type` | query | taker | `taker` or `maker` |
+
+**Examples:**
+```
+GET /api/compare/XAU
+GET /api/compare/NVDA?size=500000
+GET /api/compare/AAPL?size=2000000&order_type=maker
+```
+
+### GET `/api/assets`
+
+Returns list of all available assets.
+
+---
+
 ## Installation
 
 ```bash
