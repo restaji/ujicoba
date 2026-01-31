@@ -62,6 +62,8 @@ The final result is expressed in bps: `Effective Spread + Fees`.
 
 ## API Endpoints
 
+**Base URL:** `https://perpdexcomparisson.up.railway.app`
+
 ### GET `/api/compare/<asset>`
 
 Compare execution costs for a specific asset.
@@ -74,14 +76,18 @@ Compare execution costs for a specific asset.
 
 **Examples:**
 ```
-GET /api/compare/XAU
-GET /api/compare/NVDA?size=500000
-GET /api/compare/AAPL?size=2000000&order_type=maker
+https://perpdexcomparisson.up.railway.app/api/compare/XAU
+https://perpdexcomparisson.up.railway.app/api/compare/NVDA?size=500000
+https://perpdexcomparisson.up.railway.app/api/compare/AAPL?size=2000000&order_type=maker
 ```
 
 ### GET `/api/assets`
 
 Returns list of all available assets.
+
+```
+https://perpdexcomparisson.up.railway.app/api/assets
+```
 
 ---
 
