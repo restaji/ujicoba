@@ -38,8 +38,8 @@
                 <label>Order Size</label>
                 <div class="size-buttons">
                     <button class="size-btn" data-size="10000">$10K</button>
-                    <button class="size-btn active" data-size="100000">$100K</button>
-                    <button class="size-btn" data-size="1000000">$1M</button>
+                    <button class="size-btn" data-size="100000">$100K</button>
+                    <button class="size-btn active" data-size="1000000">$1M</button>
                     <button class="size-btn" data-size="10000000">$10M</button>
                 </div>
             </div>
@@ -107,7 +107,7 @@
         const typeInputs = document.querySelectorAll('input[name="order-type"]');
 
         // Selected state
-        let selectedOrderSize = 100000;
+        let selectedOrderSize = 1000000;
         let selectedOrderType = 'taker';
 
         // Initialize Socket.IO connection
