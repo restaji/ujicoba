@@ -41,35 +41,48 @@
         </header>
 
         <section class="input-section">
-            <div class="input-row">
-                <div class="input-group">
-                    <label for="asset-select">Asset</label>
+            <!-- Top Row: Asset + Direction -->
+            <div class="top-row">
+                <div class="input-group asset-group">
+                    <label>Asset</label>
                     <select id="asset-select">
                         <option value="">Loading...</option>
                     </select>
                 </div>
+
+                <div class="input-group direction-group">
+                    <label>Direction</label>
+                    <div class="type-selector" id="direction-inputs">
+                        <label class="type-btn active">
+                            <input type="radio" name="direction" value="long" checked>
+                            Long
+                        </label>
+                        <label class="type-btn short-btn">
+                            <input type="radio" name="direction" value="short">
+                            Short
+                        </label>
+                    </div>
+                </div>
             </div>
 
+            <!-- Bottom Row: Order Size -->
             <div class="controls-row">
                 <div class="control-group">
                     <label>Order Size</label>
                     <div class="size-buttons">
-                        <button class="size-btn" data-size="10000">$10K</button>
-                        <button class="size-btn" data-size="100000">$100K</button>
+                        <button class="size-btn" data-size="10000">$10k</button>
+                        <button class="size-btn" data-size="100000">$100k</button>
                         <button class="size-btn active" data-size="1000000">$1M</button>
                         <button class="size-btn" data-size="10000000">$10M</button>
                     </div>
-                </div>
-                <div class="control-group">
-                    <label>Order Type</label>
-                    <div class="toggle-group">
-                        <input type="radio" id="type-taker" name="order-type" value="taker" checked>
-                        <label for="type-taker" class="toggle-btn">Taker</label>
-                        <input type="radio" id="type-maker" name="order-type" value="maker">
-                        <label for="type-maker" class="toggle-btn">Maker</label>
+                    <div class="custom-size-wrapper">
+                        <input type="text" id="custom-size-input" class="custom-size-input"
+                            placeholder="Custom (e.g. 500k)">
+                        <button id="custom-size-btn" class="custom-size-apply">Apply</button>
                     </div>
                 </div>
             </div>
+
 
             <div id="loading-indicator" class="loading-indicator" style="display: none;">
                 <span class="spinner"></span>
@@ -82,6 +95,9 @@
                 <div class="winner-badge">Best Execution</div>
                 <div class="winner-name" id="winner-name">–</div>
                 <div class="winner-cost" id="winner-cost">–</div>
+                <div class="winner-leverage" id="winner-leverage"
+                    style="display:none; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 12px; padding: 6px 16px; border-radius: 20px; background: rgba(52, 211, 153, 0.1); color: #6ee7b7; border: 1px solid rgba(52, 211, 153, 0.3); box-shadow: 0 4px 12px rgba(52, 211, 153, 0.1);">
+                    Max Lev: –</div>
             </div>
 
             <div class="exchange-grid" id="exchange-grid"></div>
@@ -94,6 +110,14 @@
                     <li><strong>Total Slippage</strong> – Buy Slippage + Sell Slippage (or Opening + Closing)</li>
                     <li><strong>Total Cost</strong> – Total Slippage + Opening + Closing fees</li>
                 </ul>
+                <p class="disclaimer">
+                    <strong>Disclaimer:</strong> Data is sourced from public orderbooks and APIs. Hyperliquid data uses
+                    4 significant figures due to price bucket accuracy. Due to inherent
+                    limitations, results reflect available liquidity at the time of API call and may not represent
+                    actual
+                    execution conditions.
+                    Use for informational purposes only.
+                </p>
             </div>
         </section>
 
@@ -112,9 +136,11 @@
         const winnerCost = document.getElementById('winner-cost');
         const sizeButtons = document.querySelectorAll('.size-btn');
         const typeInputs = document.querySelectorAll('input[name="order-type"]');
+        const directionInputs = document.querySelectorAll('input[name="direction"]');
 
         let selectedOrderSize = 1000000;
         let selectedOrderType = 'taker';
+        let selectedDirection = 'long';
 
         const socket = io();
 
@@ -189,6 +215,11 @@
                     option.textContent = asset.name;
                     assetSelect.appendChild(option);
                 });
+                // Set default to XAG if available
+                if (data.assets.some(a => a.key === 'XAG')) {
+                    assetSelect.value = 'XAG';
+                    compareSlippage();
+                }
             } catch (error) {
                 console.error('Failed to load assets:', error);
                 assetSelect.innerHTML = '<option value="">Error loading</option>';
@@ -199,14 +230,63 @@
             btn.addEventListener('click', () => {
                 sizeButtons.forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
+                document.getElementById('custom-size-input').value = '';
                 selectedOrderSize = parseInt(btn.dataset.size);
                 if (assetSelect.value) compareSlippage();
             });
         });
 
+        // Custom size input handler
+        const customSizeInput = document.getElementById('custom-size-input');
+        const customSizeBtn = document.getElementById('custom-size-btn');
+
+        function applyCustomSize() {
+            let input = customSizeInput.value.trim().toLowerCase();
+            if (!input) return;
+
+            // Parse input (supports k, m suffixes)
+            input = input.replace(/[$,]/g, '');
+            let size;
+            if (input.endsWith('k')) {
+                size = parseFloat(input.slice(0, -1)) * 1000;
+            } else if (input.endsWith('m')) {
+                size = parseFloat(input.slice(0, -1)) * 1000000;
+            } else {
+                size = parseFloat(input);
+            }
+
+            if (isNaN(size) || size <= 0) {
+                alert('Please enter a valid amount');
+                return;
+            }
+
+            // Deselect preset buttons
+            sizeButtons.forEach(b => b.classList.remove('active'));
+            selectedOrderSize = size;
+            if (assetSelect.value) compareSlippage();
+        }
+
+        customSizeBtn.addEventListener('click', applyCustomSize);
+        customSizeInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') applyCustomSize();
+        });
+
         typeInputs.forEach(input => {
             input.addEventListener('change', (e) => {
                 selectedOrderType = e.target.value;
+                // Update active state
+                typeInputs.forEach(i => i.parentElement.classList.remove('active'));
+                e.target.parentElement.classList.add('active');
+                if (assetSelect.value) compareSlippage();
+            });
+        });
+
+        directionInputs.forEach(input => {
+            input.addEventListener('change', (e) => {
+                selectedDirection = e.target.value;
+                // Update active state
+                directionInputs.forEach(i => i.parentElement.classList.remove('active'));
+                e.target.parentElement.classList.add('active');
                 if (assetSelect.value) compareSlippage();
             });
         });
@@ -223,7 +303,8 @@
             socket.emit('compare', {
                 asset: asset,
                 order_size: selectedOrderSize,
-                order_type: selectedOrderType
+                order_type: selectedOrderType,
+                direction: selectedDirection
             });
         }
 
@@ -246,10 +327,22 @@
                     <div style="font-size: 13px; opacity: 0.7;">
                         Total Slippage ${formatNumber(totalSlippage)} · Fees ${formatNumber(fees)}
                     </div>
+                    </div>
                 `;
+
+                // Show Max Leverage for Winner
+                const winnerLeverage = document.getElementById('winner-leverage');
+                if (wd.max_leverage) {
+                    winnerLeverage.textContent = `Max Lev: ${wd.max_leverage}x`;
+                    winnerLeverage.style.display = 'inline-block';
+                } else {
+                    winnerLeverage.style.display = 'none';
+                }
+
             } else {
                 winnerName.textContent = 'No complete fills';
                 winnerCost.textContent = '–';
+                document.getElementById('winner-leverage').style.display = 'none';
             }
 
             exchangeGrid.innerHTML = '';
@@ -315,6 +408,7 @@
                         <span class="exchange-name">${cfg.name}</span>
                         ${symbolHtml}
                     </div>
+                    ${exData.max_leverage ? `<span class="leverage-tag" style="background: ${cfg.color}20; color: ${cfg.color}; border: 1px solid ${cfg.color}40;">${exData.max_leverage}x</span>` : ''}
                     ${exchange === winner ? '<span class="winner-tag">Winner</span>' : ''}
                 </div>
                 <div class="card-body">

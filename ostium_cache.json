@@ -1,0 +1,58 @@
+{
+  "EURUSD": {
+    "fee_bps": 3.0,
+    "max_leverage": 200.0
+  },
+  "GBPUSD": {
+    "fee_bps": 3.0,
+    "max_leverage": 200.0
+  },
+  "USDJPY": {
+    "fee_bps": 3.0,
+    "max_leverage": 200.0
+  },
+  "XAUUSD": {
+    "fee_bps": 1.5,
+    "max_leverage": 150.0
+  },
+  "XAGUSD": {
+    "fee_bps": 15.0,
+    "max_leverage": 150.0
+  },
+  "NVDAUSD": {
+    "fee_bps": 5.0,
+    "max_leverage": 100.0
+  },
+  "GOOGUSD": {
+    "fee_bps": 5.0,
+    "max_leverage": 100.0
+  },
+  "AMZNUSD": {
+    "fee_bps": 5.0,
+    "max_leverage": 100.0
+  },
+  "METAUSD": {
+    "fee_bps": 5.0,
+    "max_leverage": 100.0
+  },
+  "TSLAUSD": {
+    "fee_bps": 5.0,
+    "max_leverage": 100.0
+  },
+  "AAPLUSD": {
+    "fee_bps": 5.0,
+    "max_leverage": 100.0
+  },
+  "MSFTUSD": {
+    "fee_bps": 5.0,
+    "max_leverage": 100.0
+  },
+  "COINUSD": {
+    "fee_bps": 5.0,
+    "max_leverage": 100.0
+  },
+  "HOODUSD": {
+    "fee_bps": 5.0,
+    "max_leverage": 100.0
+  }
+}
