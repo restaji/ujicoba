@@ -44,3 +44,4 @@ aster_debug.py
 ostium_debug.py
 internal_analytic/
 !internal_analytic/lighter_debug.py
+lighter_debug.py
