@@ -29,12 +29,10 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 # Taker Fees
 HYPERLIQUID_TAKER_FEE_BPS = 0.9
 ASTER_TAKER_FEE_BPS = 4.0
-EXTENDED_TAKER_FEE_BPS = 2.5
 
-# Maker Fees 
+# Maker Fees
 HYPERLIQUID_MAKER_FEE_BPS = 0.3
 ASTER_MAKER_FEE_BPS = 0.5
-EXTENDED_MAKER_FEE_BPS = 0.0
 
 # ASSETS - MAG7 + COIN + Commodities + Forex
 # extended_symbol is for Extended Exchange (Starknet)
@@ -83,18 +81,6 @@ class OstiumAPI:
     BASE_URL = "https://metadata-backend.ostium.io"
     PAIRS_URL = "https://app.ostium.com/api/pairs"
     
-    # Fallback fees if cache file doesn't exist
-    FALLBACK_FEES = {
-        'XAUUSD': 3.0, 'XAGUSD': 15.0, 'EURUSD': 3.0, 'GBPUSD': 3.0, 'USDJPY': 3.0,
-        'AAPLUSD': 5.0, 'MSFTUSD': 5.0, 'GOOGUSD': 5.0, 'AMZNUSD': 5.0, 'METAUSD': 5.0,
-        'NVDAUSD': 5.0, 'TSLAUSD': 5.0, 'COINUSD': 5.0, 'HOODUSD': 5.0,
-    }
-    FALLBACK_LEVERAGE = {
-        'XAUUSD': 150, 'XAGUSD': 150, 'EURUSD': 200, 'GBPUSD': 200, 'USDJPY': 200,
-        'AAPLUSD': 100, 'MSFTUSD': 100, 'GOOGUSD': 100, 'AMZNUSD': 100, 'METAUSD': 100,
-        'NVDAUSD': 100, 'TSLAUSD': 100, 'COINUSD': 100, 'HOODUSD': 100,
-    }
-    
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
@@ -106,20 +92,18 @@ class OstiumAPI:
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         
-        # Load metadata from Ostium pairs API, falling back to hardcoded values
+        # Load metadata from Ostium pairs API (no fallbacks)
         self.metadata_cache = self._load_cache()
     
     def _load_cache(self):
         """
-        Load fee and leverage metadata from Ostium `pairs` API, with static fallbacks.
-        
-        Cache keys are Ostium asset symbols like 'XAUUSD', 'EURUSD', etc.
-        Values contain:
-        - fee_bps: taker fee in bps
-        - maker_fee_bps: maker fee in bps
-        - max_leverage: maximum leverage (float or int)
+        Load fee and leverage metadata from Ostium `pairs` API.
+        Also fetches 'seasons' data to override fees with 'newFee' if applicable.
         """
         cache = {}
+        pair_id_map = {} # id -> symbol
+        
+        # 1. Load Pairs (Base Metadata)
         try:
             response = self.session.get(self.PAIRS_URL, timeout=10)
             if response.status_code == 200:
@@ -128,90 +112,116 @@ class OstiumAPI:
                     for pair in data:
                         base = pair.get('from')
                         quote = pair.get('to')
+                        p_id = pair.get('id')
                         if not base or not quote:
                             continue
                         symbol = f"{base}{quote}"
+                        
+                        # Store ID mapping
+                        if p_id is not None:
+                            pair_id_map[p_id] = symbol
 
                         maker_fee_p = pair.get('makerFeeP')
                         taker_fee_p = pair.get('takerFeeP')
                         group = pair.get('group') or {}
 
-                        # Prefer symbol-level leverage, fall back to maker/group where needed
-                        max_lev = (
-                            pair.get('maxLeverage')
-                            or pair.get('makerMaxLeverage')
-                            or group.get('maxLeverage')
-                        )
+                        # Get max leverage
+                        pair_max_lev = pair.get('maxLeverage')
+                        maker_max_lev = pair.get('makerMaxLeverage')
+                        group_max_lev = group.get('maxLeverage')
+                        
+                        max_lev = None
+                        for lev_val in [pair_max_lev, maker_max_lev, group_max_lev]:
+                            if lev_val is not None:
+                                try:
+                                    lev_float = float(lev_val)
+                                    if lev_float > 0:
+                                        max_lev = lev_float
+                                        break
+                                except (TypeError, ValueError):
+                                    continue
 
-                        # Ostium leverage values are scaled (e.g. 5000 -> 50x)
                         if max_lev is not None:
-                            try:
-                                max_lev = float(max_lev) / 100.0
-                            except (TypeError, ValueError):
-                                max_lev = None
+                            max_lev = max_lev / 100.0
 
                         taker_fee_bps = None
                         maker_fee_bps = None
 
-                        if isinstance(taker_fee_p, (int, float)):
-                            # On-chain values are scaled; divide by 1e4 to get bps similar to other venues
-                            taker_fee_bps = float(taker_fee_p) / 10000.0
-                        if isinstance(maker_fee_p, (int, float)):
-                            maker_fee_bps = float(maker_fee_p) / 10000.0
+                        if isinstance(taker_fee_p, (int, float, str)):
+                            try:
+                                taker_fee_bps = float(taker_fee_p) / 10000.0
+                            except (TypeError, ValueError):
+                                pass
+                        if isinstance(maker_fee_p, (int, float, str)):
+                            try:
+                                maker_fee_bps = float(maker_fee_p) / 10000.0
+                            except (TypeError, ValueError):
+                                pass
 
-                        # Fill missing from static fallbacks when available
-                        if taker_fee_bps is None and symbol in self.FALLBACK_FEES:
-                            taker_fee_bps = self.FALLBACK_FEES[symbol]
-                        if max_lev is None and symbol in self.FALLBACK_LEVERAGE:
-                            max_lev = self.FALLBACK_LEVERAGE[symbol]
-
-                        if taker_fee_bps is not None or max_lev is not None or maker_fee_bps is not None:
+                        if taker_fee_bps is not None:
                             cache[symbol] = {
-                                'fee_bps': taker_fee_bps if taker_fee_bps is not None else self.FALLBACK_FEES.get(symbol, 5.0),
+                                'fee_bps': taker_fee_bps,
                                 'maker_fee_bps': maker_fee_bps if maker_fee_bps is not None else 0.0,
-                                'max_leverage': float(max_lev) if max_lev is not None else self.FALLBACK_LEVERAGE.get(symbol)
+                                'max_leverage': float(max_lev) if max_lev is not None else None
                             }
         except Exception as e:
             print(f"Error loading Ostium metadata from pairs API: {e}")
 
-        # Ensure we at least have static fallbacks for known symbols
-        if not cache:
-            for sym, fee in self.FALLBACK_FEES.items():
-                cache[sym] = {
-                    'fee_bps': fee,
-                    'maker_fee_bps': 0.0,
-                    'max_leverage': self.FALLBACK_LEVERAGE.get(sym)
-                }
-        else:
-            for sym, fee in self.FALLBACK_FEES.items():
-                if sym not in cache:
-                    cache[sym] = {
-                        'fee_bps': fee,
-                        'maker_fee_bps': 0.0,
-                        'max_leverage': self.FALLBACK_LEVERAGE.get(sym)
-                    }
+        # 2. Load Seasons (Fee Overrides)
+        try:
+            seasons_url = "https://onlypoints.ostium.io/api/seasons/current"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
+                'Referer': 'https://app.ostium.io/'
+            }
+            # Disable verification for this specific call if needed or global?
+            # Global verification was disabled in __init__, so it should apply here.
+            response = self.session.get(seasons_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                s_data = response.json()
+                season = s_data.get('season', {})
+                mode = season.get('mode', {})
+                assets = mode.get('assets', [])
+                
+                if isinstance(assets, list):
+                    for asset_item in assets:
+                        a_id = asset_item.get('assetId')
+                        new_fee = asset_item.get('newFee') # e.g. 0.05
+                        
+                        if a_id is not None and new_fee is not None and a_id in pair_id_map:
+                            symbol = pair_id_map[a_id]
+                            if symbol in cache:
+                                # Convert newFee to bps. Assuming 0.05 means 0.05% -> 5 bps
+                                new_fee_bps = float(new_fee) * 100.0
+                                cache[symbol]['fee_bps'] = new_fee_bps
+                                cache[symbol]['maker_fee_bps'] = new_fee_bps
+                                # print(f"Ostium: Overridden fee for {symbol} (ID {a_id}) to {new_fee_bps} bps")
+        except Exception as e:
+            print(f"Error loading Ostium seasons data: {e}")
 
         return cache
     
-    def get_fee_bps(self, ostium_symbol: str) -> float:
-        """Get the opening fee for an Ostium asset."""
+    def get_fee_bps(self, ostium_symbol: str) -> Optional[float]:
+        """Get the opening fee for an Ostium asset. Returns None if not available."""
         data = self.metadata_cache.get(ostium_symbol)
         if data:
-            return data['fee_bps']
-        return 5.0  # Fallback
+            return data.get('fee_bps')
+        return None
     
-    def get_maker_fee_bps(self, ostium_symbol: str) -> float:
-        """Get the maker fee for an Ostium asset."""
+    def get_maker_fee_bps(self, ostium_symbol: str) -> Optional[float]:
+        """Get the maker fee for an Ostium asset. Returns None if not available."""
         data = self.metadata_cache.get(ostium_symbol)
         if data:
-            return data.get('maker_fee_bps', 0.0)
-        return 0.0
+            return data.get('maker_fee_bps')
+        return None
         
     def get_max_leverage(self, ostium_symbol: str) -> Optional[float]:
         """Get max leverage."""
         data = self.metadata_cache.get(ostium_symbol)
         if data:
-            return data['max_leverage']
+            return data.get('max_leverage')
         return None
     
     def get_latest_price(self, asset: str, max_retries: int = 5) -> Optional[Dict]:
@@ -278,7 +288,7 @@ class OstiumAPI:
 
     def calculate_execution_cost(self, asset: str, order_size_usd: float) -> Optional[Dict]:
         """Calculate execution cost using shared ExecutionCalculator."""
-        # 1. Get synthetic orderbook
+        # 1. Get synthetic orderbook (for oracle bid/ask spread)
         raw_data = self.get_orderbook(asset)
         # Use order_size_usd 
         std_orderbook = self.normalize_orderbook(raw_data, depth_usd=order_size_usd * 1.01)
@@ -286,12 +296,17 @@ class OstiumAPI:
         if not std_orderbook:
             return None
         
-        # 2. Get fees
+        # 2. Get fees from API (no fallbacks)
         open_fee_bps = self.get_fee_bps(asset)
         maker_fee_bps = self.get_maker_fee_bps(asset)
+        # Ostium charges fee only on open (close fee is 0)
         close_fee_bps = 0.0
         
-        # 3. Calculate using shared logic
+        # If no fee data available from API, return None
+        if open_fee_bps is None:
+            return None
+        
+        # 3. Calculate using shared logic (uses oracle spread by default)
         result = ExecutionCalculator.calculate_execution_cost(
             std_orderbook,
             order_size_usd,
@@ -302,15 +317,18 @@ class OstiumAPI:
         if result:
             # Add Ostium-specific metadata
             result['fee_bps'] = open_fee_bps
-            result['maker_fee_bps'] = maker_fee_bps
+            result['maker_fee_bps'] = maker_fee_bps if maker_fee_bps is not None else 0.0
             if raw_data:
                 result['is_market_open'] = raw_data.get('isMarketOpen', False)
             
             # Inject Max Leverage
             result['max_leverage'] = self.get_max_leverage(asset)
-        
-        return result
+            
+            # Use oracle bid/ask spread from metadata for slippage calculation
+            # (priceImpactK method removed - numbers weren't accurate)
+            # result['price_impact_k_used'] = False
 
+            return result
 
 class HyperliquidAPI:
     def __init__(self):
@@ -360,19 +378,8 @@ class HyperliquidAPI:
 
     def get_max_leverage(self, symbol: str) -> Optional[float]:
         self._fetch_metadata()
-        # Symbol might be "GOLD", "xyz:GOLD", "XAU" is normalized to "GOLD" via asset config?
-        # Check normalization logic.
-        # normalize_symbol returns "GOLD" for XAU/USD config? No, config has "GOLD" as hyperliquid_symbol.
-        # But get_orderbook calls normalize_symbol("GOLD") -> "GOLD".
-        # Then _fetch_coin calls with "xyz:GOLD".
         
-        # So inputs here are likely "GOLD".
-        
-        # Try exact match
-        if symbol in self.max_leverages_cache:
-            return self.max_leverages_cache[symbol]
-        
-        # Try prepending xyz:
+        # Try xyz:
         if f"xyz:{symbol}" in self.max_leverages_cache:
             return self.max_leverages_cache[f"xyz:{symbol}"]
             
@@ -702,15 +709,15 @@ class AsterAPI:
     MAX_LEVERAGE = {
         'XAUUSDT': 75,
         'XAGUSDT': 100,
-        'QQQUSDT': None,  # Not listed on Aster
-        'NVDAUSDT': None,
-        'AAPLUSDT': None,
-        'AMZNUSDT': None,
-        'GOOGUSDT': None,
-        'MSFTUSDT': None,
-        'METAUSDT': None,
-        'TSLAUSDT': None,
-        'COINUSDT': None,
+        'QQQUSDT': 10,  
+        'NVDAUSDT': 10,
+        'AAPLUSDT': 10,
+        'AMZNUSDT': 10,
+        'GOOGUSDT': 10,
+        'MSFTUSDT': 10,
+        'METAUSDT': 10,
+        'TSLAUSDT': 10,
+        'COINUSDT': None, #not available
     }
     
     def __init__(self):
@@ -877,6 +884,7 @@ class AvantisAPI:
         skew_adjusted = (param1 * open_interest_pct + param2) / 10000
         fee_bps = skew_adjusted * 100
         
+        
         return fee_bps
     
     def _fetch_dynamic_spread(self, pair_index: int, position_size: float, is_long: bool, is_pnl: bool) -> Optional[float]:
@@ -987,15 +995,67 @@ class ExtendedAPI:
     """Client for Extended Exchange (Starknet) orderbook data."""
     
     BASE_URL = "https://api.starknet.extended.exchange/api/v1"
+    API_KEY = "8dee2f0750d7f796699ec461b7c64219"
     
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
+            "X-API-Key": self.API_KEY,
         })
         self.market_cache = {}  # market -> {max_leverage, ...}
         self.market_cache_loaded = {}
+        self.fee_cache = {}  # market -> {taker_fee_bps, maker_fee_bps}
+    
+    def get_fees(self, market: str) -> Tuple[Optional[float], Optional[float]]:
+        """Get taker and maker fees for a market from /api/v1/user/fees?market={market}."""
+        if market in self.fee_cache:
+            c = self.fee_cache[market]
+            return (c.get('taker_fee_bps'), c.get('maker_fee_bps'))
+        try:
+            url = f"{self.BASE_URL}/user/fees?market={market}"
+            response = self.session.get(url, timeout=30)
+            if response.status_code != 200:
+                return (None, None)
+            data = response.json()
+            
+            # Handle list response in data.data
+            raw_data = data.get('data', data)
+            if isinstance(raw_data, list) and raw_data:
+                raw = raw_data[0]
+            elif isinstance(raw_data, dict):
+                raw = raw_data
+            else:
+                raw = {}
+
+            # Support common response shapes including *FeeRate
+            taker = raw.get('takerFeeRate', raw.get('takerFee', raw.get('taker_fee')))
+            maker = raw.get('makerFeeRate', raw.get('makerFee', raw.get('maker_fee')))
+            
+            # If in decimal form (e.g. 0.00025) -> bps = * 10000; if in percent (e.g. 0.025) -> bps = * 100
+            if taker is not None:
+                taker_val = float(taker)
+                taker_bps = taker_val * 10000 if abs(taker_val) < 0.1 else taker_val * 100
+            else:
+                taker_bps = 0.0 # Default if field missing but call succeeded? Or None? keep 0.0 for logic safety if partial
+
+            if maker is not None:
+                maker_val = float(maker)
+                maker_bps = maker_val * 10000 if abs(maker_val) < 0.1 else maker_val * 100
+            else:
+                maker_bps = 0.0
+
+            # If the API call succeeded but weird data, we might have 0.0. 
+            # But earlier fallback was (0,0). Detailed failure return (None, None) is preferred if explicit error.
+            # If explicit None from parsing, let's trust it. 
+            # Actually, let's conform to "if not retrieved just type null".
+            
+            self.fee_cache[market] = {'taker_fee_bps': taker_bps, 'maker_fee_bps': maker_bps}
+            return (taker_bps, maker_bps)
+        except Exception as e:
+            print(f"Error fetching Extended fees for {market}: {e}")
+            return (None, None)
     
     def _load_market_info(self, market: str):
         """Fetch and cache market info including max leverage."""
@@ -1076,18 +1136,21 @@ class ExtendedAPI:
         if not std_orderbook:
             return None
         
-        open_fee_bps = EXTENDED_TAKER_FEE_BPS
-        close_fee_bps = EXTENDED_TAKER_FEE_BPS
+        taker_bps, maker_bps = self.get_fees(market) if market else (None, None)
+        
+        # Use 0.0 for calculation if fees are None, but result will reflect missing fees
+        calc_open = taker_bps if taker_bps is not None else 0.0
+        calc_close = taker_bps if taker_bps is not None else 0.0
         
         result = ExecutionCalculator.calculate_execution_cost(
             std_orderbook,
             order_size_usd,
-            open_fee_bps=open_fee_bps,
-            close_fee_bps=close_fee_bps
+            open_fee_bps=calc_open,
+            close_fee_bps=calc_close
         )
         
         if result:
-            result['maker_fee_bps'] = EXTENDED_MAKER_FEE_BPS
+            result['maker_fee_bps'] = maker_bps
             # Add max leverage if market provided
             if market:
                 result['max_leverage'] = self.get_max_leverage(market)
@@ -1596,9 +1659,10 @@ def compare():
     # Calculate totals and determine winner
     exchanges = []
     
-    # Get Lighter fees dynamically from API
+    # Get Lighter and Extended fees dynamically from API
     config = ASSETS[asset]
     lighter_taker_bps, lighter_maker_bps = comparator.lighter.get_fees(config.lighter_market_id) if config.lighter_market_id else (0.0, 0.0)
+    extended_taker_bps, extended_maker_bps = comparator.extended.get_fees(config.extended_symbol) if config.extended_symbol else (0.0, 0.0)
     
     # Fee structures
     if order_type == 'maker':
@@ -1607,8 +1671,7 @@ def compare():
             'hyperliquid': {'open': HYPERLIQUID_MAKER_FEE_BPS, 'close': HYPERLIQUID_MAKER_FEE_BPS},
             'lighter': {'open': lighter_maker_bps, 'close': lighter_maker_bps},
             'aster': {'open': ASTER_MAKER_FEE_BPS, 'close': ASTER_MAKER_FEE_BPS},
-            # Extended uses Maker Fee (0.0)
-            'extended': {'open': EXTENDED_MAKER_FEE_BPS, 'close': EXTENDED_MAKER_FEE_BPS} 
+            'extended': {'open': extended_maker_bps, 'close': extended_maker_bps}
         }
     else:
         # TAKER Mode: Standard Taker Fees
@@ -1616,7 +1679,7 @@ def compare():
             'hyperliquid': {'open': HYPERLIQUID_TAKER_FEE_BPS, 'close': HYPERLIQUID_TAKER_FEE_BPS},
             'lighter': {'open': lighter_taker_bps, 'close': 0.0},
             'aster': {'open': ASTER_TAKER_FEE_BPS, 'close': 0.0},
-            'extended': {'open': EXTENDED_TAKER_FEE_BPS, 'close': EXTENDED_TAKER_FEE_BPS}
+            'extended': {'open': extended_taker_bps, 'close': extended_taker_bps}
         }
     
     # Ostium has variable fees per asset
@@ -1665,15 +1728,22 @@ def compare():
             
             # Avantis: slippage only occurs once 
             effective_spread = slippage if exchange_name == 'avantis' else 2 * slippage
-            total_cost = effective_spread + fees['open'] + fees['close']
+            
+            f_open = fees['open']
+            f_close = fees['close']
+            
+            if f_open is None or f_close is None:
+                total_cost = None
+            else:
+                total_cost = effective_spread + f_open + f_close
             
             ex_data['effective_spread_bps'] = effective_spread
-            ex_data['open_fee_bps'] = fees['open']
-            ex_data['close_fee_bps'] = fees['close']
+            ex_data['open_fee_bps'] = f_open
+            ex_data['close_fee_bps'] = f_close
             ex_data['total_cost_bps'] = total_cost
             ex_data['exchange'] = exchange_name
             
-            if ex_data.get('executed') != 'PARTIAL':
+            if total_cost is not None and ex_data.get('executed') != 'PARTIAL':
                 exchanges.append({
                     'name': exchange_name,
                     'total_cost': total_cost,
@@ -1722,23 +1792,24 @@ def compare_get(asset):
     # Calculate totals and determine winner (same logic as POST endpoint)
     exchanges = []
     
-    # Get Lighter fees dynamically from API
+    # Get Lighter and Extended fees dynamically from API
     config = ASSETS[asset]
     lighter_taker_bps, lighter_maker_bps = comparator.lighter.get_fees(config.lighter_market_id) if config.lighter_market_id else (0.0, 0.0)
+    extended_taker_bps, extended_maker_bps = comparator.extended.get_fees(config.extended_symbol) if config.extended_symbol else (0.0, 0.0)
     
     if order_type == 'maker':
         fee_structure = {
             'hyperliquid': {'open': HYPERLIQUID_MAKER_FEE_BPS, 'close': HYPERLIQUID_MAKER_FEE_BPS},
             'lighter': {'open': lighter_maker_bps, 'close': lighter_maker_bps},
             'aster': {'open': ASTER_MAKER_FEE_BPS, 'close': ASTER_MAKER_FEE_BPS},
-            'extended': {'open': EXTENDED_MAKER_FEE_BPS, 'close': EXTENDED_MAKER_FEE_BPS}
+            'extended': {'open': extended_maker_bps, 'close': extended_maker_bps}
         }
     else:
         fee_structure = {
             'hyperliquid': {'open': HYPERLIQUID_TAKER_FEE_BPS, 'close': HYPERLIQUID_TAKER_FEE_BPS},
             'lighter': {'open': lighter_taker_bps, 'close': 0.0},
             'aster': {'open': ASTER_TAKER_FEE_BPS, 'close': 0.0},
-            'extended': {'open': EXTENDED_TAKER_FEE_BPS, 'close': EXTENDED_TAKER_FEE_BPS}
+            'extended': {'open': extended_taker_bps, 'close': extended_taker_bps}
         }
     
     os_data = result.get('ostium')
@@ -1755,15 +1826,22 @@ def compare_get(asset):
             fees = fee_structure.get(exchange_name, {'open': 0, 'close': 0})
             slippage = ex_data.get('slippage_bps', 0)
             effective_spread = slippage if exchange_name == 'avantis' else 2 * slippage
-            total_cost = effective_spread + fees['open'] + fees['close']
+            
+            f_open = fees['open']
+            f_close = fees['close']
+            
+            if f_open is None or f_close is None:
+                total_cost = None
+            else:
+                total_cost = effective_spread + f_open + f_close
             
             ex_data['effective_spread_bps'] = effective_spread
-            ex_data['open_fee_bps'] = fees['open']
-            ex_data['close_fee_bps'] = fees['close']
+            ex_data['open_fee_bps'] = f_open
+            ex_data['close_fee_bps'] = f_close
             ex_data['total_cost_bps'] = total_cost
             ex_data['exchange'] = exchange_name
             
-            if ex_data.get('executed') != 'PARTIAL':
+            if total_cost is not None and ex_data.get('executed') != 'PARTIAL':
                 exchanges.append({'name': exchange_name, 'total_cost': total_cost, 'filled': ex_data.get('filled', True)})
     
     if exchanges:
@@ -1864,22 +1942,23 @@ def handle_compare(data):
         # Calculate total costs and determine winner (same logic as HTTP endpoint)
         exchanges = []
         
-        # Get Lighter fees dynamically from API
+        # Get Lighter and Extended fees dynamically from API
         lighter_taker_bps, lighter_maker_bps = lighter_api.get_fees(config.lighter_market_id) if config.lighter_market_id else (0.0, 0.0)
+        extended_taker_bps, extended_maker_bps = extended_api.get_fees(config.extended_symbol) if config.extended_symbol else (0.0, 0.0)
         
         if order_type == 'maker':
             fee_structure = {
                 'hyperliquid': {'open': HYPERLIQUID_MAKER_FEE_BPS, 'close': HYPERLIQUID_MAKER_FEE_BPS},
                 'lighter': {'open': lighter_maker_bps, 'close': lighter_maker_bps},
                 'aster': {'open': ASTER_MAKER_FEE_BPS, 'close': ASTER_MAKER_FEE_BPS},
-                'extended': {'open': EXTENDED_MAKER_FEE_BPS, 'close': EXTENDED_MAKER_FEE_BPS}
+                'extended': {'open': extended_maker_bps, 'close': extended_maker_bps}
             }
         else:
             fee_structure = {
                 'hyperliquid': {'open': HYPERLIQUID_TAKER_FEE_BPS, 'close': HYPERLIQUID_TAKER_FEE_BPS},
                 'lighter': {'open': lighter_taker_bps, 'close': 0.0},
                 'aster': {'open': ASTER_TAKER_FEE_BPS, 'close': 0.0},
-                'extended': {'open': EXTENDED_TAKER_FEE_BPS, 'close': EXTENDED_TAKER_FEE_BPS}
+                'extended': {'open': extended_taker_bps, 'close': extended_taker_bps}
             }
         
         os_data = result.get('ostium')
@@ -1896,15 +1975,22 @@ def handle_compare(data):
                 fees = fee_structure.get(exchange_name, {'open': 0, 'close': 0})
                 slippage = ex_data.get('slippage_bps', 0)
                 effective_spread = slippage if exchange_name == 'avantis' else 2 * slippage
-                total_cost = effective_spread + fees['open'] + fees['close']
+                
+                f_open = fees['open']
+                f_close = fees['close']
+                
+                if f_open is None or f_close is None:
+                    total_cost = None
+                else:
+                    total_cost = effective_spread + f_open + f_close
                 
                 ex_data['effective_spread_bps'] = effective_spread
-                ex_data['open_fee_bps'] = fees['open']
-                ex_data['close_fee_bps'] = fees['close']
+                ex_data['open_fee_bps'] = f_open
+                ex_data['close_fee_bps'] = f_close
                 ex_data['total_cost_bps'] = total_cost
                 ex_data['exchange'] = exchange_name
                 
-                if ex_data.get('executed') != 'PARTIAL':
+                if total_cost is not None and ex_data.get('executed') != 'PARTIAL':
                     exchanges.append({'name': exchange_name, 'total_cost': total_cost, 'filled': ex_data.get('filled', True)})
         
         if exchanges:
