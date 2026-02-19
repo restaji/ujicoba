@@ -113,7 +113,7 @@ class OstiumAPI:
         
         # 1. Load Pairs (Base Metadata)
         try:
-            response = self.session.get(self.PAIRS_URL, timeout=10)
+            response = self.session.get(self.PAIRS_URL, timeout=30)
             if response.status_code == 200:
                 data = response.json()
                 if isinstance(data, list):
@@ -229,7 +229,7 @@ class OstiumAPI:
             }
             # Disable verification for this specific call if needed or global?
             # Global verification was disabled in __init__, so it should apply here.
-            response = self.session.get(seasons_url, headers=headers, timeout=10)
+            response = self.session.get(seasons_url, headers=headers, timeout=30)
             
             if response.status_code == 200:
                 s_data = response.json()
@@ -358,7 +358,7 @@ class OstiumAPI:
         
         for attempt in range(max_retries):
             try:
-                response = self.session.get(url, params=params, timeout=1000)
+                response = self.session.get(url, params=params, timeout=30)
                 if response.status_code == 200:
                     try:
                         data = response.json()
@@ -538,7 +538,7 @@ class HyperliquidAPI:
         try:
             # 1. Get deployer fee scale from perpDexs API (public)
             payload = {"type": "perpDexs"}
-            response = requests.post(self.base_url, json=payload, headers=self.headers, timeout=10)
+            response = requests.post(self.base_url, json=payload, headers=self.headers, timeout=30)
             if response.status_code == 200:
                 dexs = response.json()
                 for dex in dexs:
@@ -549,7 +549,7 @@ class HyperliquidAPI:
             # 2. Get base fee rates from userFees API (public - use zero address for base rates)
             # Using a generic address to get the base fee schedule
             payload = {"type": "userFees", "user": "0x0000000000000000000000000000000000000001", "dex": "xyz"}
-            response = requests.post(self.base_url, json=payload, headers=self.headers, timeout=10)
+            response = requests.post(self.base_url, json=payload, headers=self.headers, timeout=30)
             if response.status_code == 200:
                 fees = response.json()
                 self.base_taker_rate = float(fees.get("userCrossRate", 0.00045))
@@ -567,7 +567,7 @@ class HyperliquidAPI:
         try:
             # Use dex='xyz' as discovered
             payload = {"type": "metaAndAssetCtxs", "dex": "xyz"}
-            response = requests.post(self.base_url, json=payload, headers=self.headers, timeout=10)
+            response = requests.post(self.base_url, json=payload, headers=self.headers, timeout=30)
             if response.status_code == 200:
                 data = response.json()
                 universe = []
@@ -680,7 +680,7 @@ class HyperliquidAPI:
             payload["nSigFigs"] = n_sig_figs
 
         try:
-            response = requests.post(self.base_url, json=payload, headers=self.headers, timeout=1000)
+            response = requests.post(self.base_url, json=payload, headers=self.headers, timeout=30)
             if response.status_code != 200: 
                 return None
             data = response.json()
@@ -930,7 +930,7 @@ class LighterAPI:
     def get_orderbook(self, market_id: int) -> Optional[Dict]:
         url = f"{self.base_url}/orderBookOrders?market_id={market_id}&limit=250"
         try:
-            response = requests.get(url, headers=self.headers, timeout=1000)
+            response = requests.get(url, headers=self.headers, timeout=30)
             response.raise_for_status()
             return response.json()
         except Exception: return None
@@ -973,14 +973,15 @@ class LighterAPI:
         if not market_id:
             return None
         
+
         # Get dynamic fees from API
         taker_fee_bps, maker_fee_bps = self.get_fees(market_id)
-        
+        calc_fee = taker_fee_bps if taker_fee_bps is not None else 0.0
         result = ExecutionCalculator.calculate_execution_cost(
             std_orderbook,
             order_size_usd,
-            open_fee_bps=taker_fee_bps,
-            close_fee_bps=taker_fee_bps
+            open_fee_bps=calc_fee,
+            close_fee_bps=calc_fee
         )
         
         if result:
@@ -1031,9 +1032,9 @@ class AsterAPI:
         url = f"{self.BASE_URL}{endpoint}"
         try:
             if method == 'GET':
-                response = self.session.get(url, params=params, timeout=10)
+                response = self.session.get(url, params=params, timeout=30)
             else:
-                response = self.session.post(url, data=params, timeout=10)
+                response = self.session.post(url, data=params, timeout=30)
             response.raise_for_status()
             return response.json()
         except Exception as e:
@@ -1091,7 +1092,7 @@ class AsterAPI:
         
         try:
             url = f"{self.LEVERAGE_API}?symbol={symbol}"
-            response = requests.get(url, headers=self.headers, timeout=10)
+            response = requests.get(url, headers=self.headers, timeout=30)
             if response.status_code == 200:
                 data = response.json()
                 if data.get('success') and data.get('data'):
@@ -1117,7 +1118,7 @@ class AsterAPI:
         url = f"{self.BASE_URL}/depth"
         params = {'symbol': symbol, 'limit': 1000}  
         try:
-            response = requests.get(url, headers=self.headers, params=params, timeout=1000)
+            response = requests.get(url, headers=self.headers, params=params, timeout=30)
             if response.status_code != 200:
                 return None
             data = response.json()
@@ -1487,7 +1488,7 @@ class ExtendedAPI:
     def get_orderbook(self, market: str) -> Optional[Dict]:
         try:
             url = f"{self.BASE_URL}/info/markets/{market}/orderbook"
-            response = self.session.get(url, timeout=1000)
+            response = self.session.get(url, timeout=30)
             if response.status_code != 200:
                 return None
             data = response.json()
