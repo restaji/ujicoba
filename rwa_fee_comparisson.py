@@ -2034,8 +2034,8 @@ class FeeComparator:
         else:
             fee_structure = {
                 'hyperliquid': {'open': hl_taker_bps, 'close': hl_taker_bps},
-                'lighter': {'open': lighter_taker_bps, 'close': 0.0},
-                'aster': {'open': aster_taker_bps, 'close': 0.0},
+                'lighter': {'open': lighter_taker_bps, 'close': lighter_taker_bps},
+                'aster': {'open': aster_taker_bps, 'close': aster_taker_bps},
                 'extended': {'open': extended_taker_bps, 'close': extended_taker_bps}
             }
         
